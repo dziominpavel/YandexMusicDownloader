@@ -13,25 +13,26 @@
 ## Этап 1. Выбор стека — решён (08.09.2026)
 
 - [x] Стек: **Go**, UI — **Windows-окно** (Wails v2 дефолт, Fyne запасной), дистрибуция — **один exe** (см. `docs/09-stack-options.md`)
-- [ ] Создать change через `/opsx-propose` (например, `mvp-desktop-flac`)
+- [x] Change `mvp-desktop-flac` создан, реализован и заархивирован (`openspec/changes/archive/2026-09-08-mvp-desktop-flac/`)
 
-## Этап 2. MVP v0.1 — один трек в FLAC с тегами
+## Этап 2. MVP v0.1 — один трек в FLAC с тегами — готов (09.09.2026)
 
 Критерий готовности: вставил ссылку → получил `.flac` с тегами в `downloads/`.
 
-- [ ] Каркас `src/`: Config (чтение `.env`), Resolver (парсинг ссылки), Downloader, Tagger
-- [ ] Скачивание: lossless → fallback на лучший MP3 (см. `openspec/specs/track-download/spec.md`)
-- [ ] Тегирование: обязательные поля + мультиартист + обложка (см. `openspec/specs/audio-tagging/spec.md`)
-- [ ] Минимальный UI: Windows-окно (одно поле + кнопка «Скачать» + лог)
-- [ ] Сборка в один `app.exe` + черновик инструкции для друзей (токен → запуск)
-- [ ] Ручная проверка на 5–10 треках (FLAC есть / FLAC нет / файл уже существует / обрыв сети)
+- [x] Каркас `src/`: Config (чтение `.env`), Resolver (парсинг ссылки), Downloader, Tagger
+- [x] Скачивание: lossless → fallback на лучший MP3 (см. `openspec/specs/track-download/spec.md`)
+- [x] Тегирование: обязательные поля + мультиартист + обложка (см. `openspec/specs/audio-tagging/spec.md`)
+- [x] Минимальный UI: Windows-окно (одно поле + кнопка «Скачать» + лог, поле очищается после нажатия)
+- [x] Сборка в один `app.exe` + инструкция для друзей (`docs/friends-setup.md`)
+- [x] Ручная проверка: FLAC / ALAC→FLAC через `ffmpeg.exe` / MP3-fallback / уже скачан / битая ссылка
+- [x] Имена файлов: плоская раскладка `Группа - Трек` с сортировкой кириллицы (см. `docs/12-file-naming.md`)
 
-Вести через OpenSpec: propose → apply → archive.
+Весь цикл OpenSpec: propose → apply → archive — пройден.
 
 ## Этап 3. v0.2 — альбомы, плейлисты, удобство
 
 - [ ] Альбомы / плейлисты / чарты (пачкой, с прогрессом)
-- [ ] Шаблон папок `Author/Album/NN - Title.flac`
+- [x] Раскладка файлов решена иначе: плоская `Группа - Трек`, без папок (см. `docs/12-file-naming.md`) — пункт про `Author/Album/NN` отменён
 - [ ] Жанры с переводом, `.lrc` рядом, `cover.jpg` опционально
 - [ ] Ретрай одного трека, нормальные сообщения об ошибках
 

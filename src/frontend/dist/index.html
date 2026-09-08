@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>YandexMusicDownloader</title>
+<style>
+  body { font-family: Segoe UI, sans-serif; margin: 16px; background: #1e1e1e; color: #ddd; }
+  #row { display: flex; gap: 8px; }
+  #link { flex: 1; padding: 8px; font-size: 14px; }
+  #dl { padding: 8px 20px; font-size: 14px; cursor: pointer; }
+  #dl:disabled { cursor: wait; opacity: 0.6; }
+  #log { margin-top: 12px; white-space: pre-wrap; font-family: Consolas, monospace; font-size: 13px; }
+  .done { color: #7ee787; } .err { color: #ff7b72; } .info { color: #79c0ff; }
+</style>
+</head>
+<body>
+<h2>YandexMusicDownloader</h2>
+<div id="row">
+  <input id="link" placeholder="Вставь ссылку на трек: music.yandex.ru/album/.../track/...">
+  <button id="dl">Скачать</button>
+</div>
+<div id="log"></div>
+<script>
+  const log = document.getElementById('log');
+  const btn = document.getElementById('dl');
+  const input = document.getElementById('link');
+  function line(text, cls) {
+    const div = document.createElement('div');
+    if (cls) div.className = cls;
+    div.textContent = text;
+    log.appendChild(div);
+  }
+  window.runtime.EventsOn('log', (text, kind) => line(text, kind));
+  btn.onclick = async () => {
+    const link = input.value.trim();
+    if (!link) return;
+    input.value = '';
+    input.focus();
+    btn.disabled = true;
+    try {
+      const res = await window.go.ui.App.Download(link);
+      if (res) line(res, res.startsWith('[done]') ? 'done' : (res.startsWith('[error]') ? 'err' : 'info'));
+    } catch (e) {
+      line('[error] ' + e, 'err');
+    }
+    btn.disabled = false;
+  };
+</script>
+</body>
+</html>

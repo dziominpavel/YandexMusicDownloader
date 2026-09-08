@@ -23,3 +23,6 @@ yamdl
 # ide
 .vscode/
 .idea/
+
+# editor backups
+*~

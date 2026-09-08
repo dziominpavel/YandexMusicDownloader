@@ -46,6 +46,20 @@
 - **WHEN** трек недоступен в lossless (нет подписки или прав)
 - **THEN** скачивается лучший MP3 и лог содержит `[done] Artist — Title (MP3 fallback)`
 
+### Requirement: ALAC в M4A → FLAC на лету
+
+Если lossless приехал в контейнере `flac-mp4` (ALAC в M4A), приложение MUST перекодировать аудио в plain FLAC через `ffmpeg.exe` рядом с exe (lossless→lossless, аудио бит-в-бит) и тегировать уже FLAC нашим тегером. В логе — `[done] Artist — Title (FLAC) [ALAC→FLAC]`. Если `ffmpeg.exe` нет рядом или задан `CONVERT_M4A=false`, приложение MUST сохранять `.m4a` как раньше. Неудачная конвертация MUST идти по обычному пути ошибок (другое зеркало, затем MP3-fallback).
+
+#### Scenario: ALAC превратился во FLAC
+
+- **WHEN** трек доступен в lossless только как `flac-mp4` и `ffmpeg.exe` лежит рядом с exe
+- **THEN** сохраняется `.flac` с полными тегами и лог содержит `[done] Artist — Title (FLAC) [ALAC→FLAC]`
+
+#### Scenario: Конвертера нет
+
+- **WHEN** трек — `flac-mp4`, а `ffmpeg.exe` рядом нет
+- **THEN** сохраняется `.m4a` с тегами как раньше, без ошибок
+
 ### Requirement: Потоковая запись и атомарность
 
 Приложение MUST NOT держать весь файл в памяти: запись — потоковая, публикация — атомарная (`временный файл → переименование`). Недокачанный файл MUST NOT оставаться в папке назначения.

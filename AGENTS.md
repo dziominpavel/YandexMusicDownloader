@@ -1,7 +1,7 @@
 # YandexMusicDownloader — правила для AI-агента
 
 Единый IDE-нейтральный источник always-on правил. Читается любым агентом (Cursor, Devin Desktop, JetBrains AI, OpenCode и др.).
-Дополнительные правила: `.cursor/rules/*.mdc`. OpenSpec-скиллы: `.cursor/skills/`, `.devin/skills/`.
+Дополнительные правила: `.cursor/rules/*.mdc`. OpenSpec-скиллы: `.cursor/skills/`, `.devin/skills/`, `.opencode/skills/`; команды: `.cursor/commands/opsx-*.md`, `.devin/workflows/opsx-*.md`, `.opencode/commands/opsx-*.md`.
 
 ## Контекст проекта
 
@@ -49,7 +49,7 @@
 
 ## OpenSpec (spec-driven development)
 
-Структура: `openspec/` (`specs/`, `changes/`, `changes/archive/`). Скиллы и команды для Cursor (`.cursor/skills/openspec-*`, `.cursor/commands/opsx-*.md`) и Devin Desktop (`.devin/skills/openspec-*`, `.devin/workflows/opsx-*.md`).
+Структура: `openspec/` (`specs/`, `changes/`, `changes/archive/`). Скиллы и команды для Cursor (`.cursor/skills/openspec-*`, `.cursor/commands/opsx-*.md`), Devin Desktop (`.devin/skills/openspec-*`, `.devin/workflows/opsx-*.md`) и OpenCode (`.opencode/skills/openspec-*`, `.opencode/commands/opsx-*.md`).
 
 ### Workflow
 

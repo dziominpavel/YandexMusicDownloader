@@ -2,7 +2,8 @@ schema: spec-driven
 
 context: |
   YandexMusicDownloader — личное приложение для скачивания музыки с Яндекс Музыки в FLAC (с fallback на MP3).
-  Стек не выбран (кандидаты: Python + yandex-music-api + mutagen vs Go single-binary, см. docs/09-stack-options.md).
+  Стек: Go, UI — десктопное Windows-окно (Wails v2 дефолт, Fyne запасной), дистрибуция — один exe.
+  Протокол скачивания портируется из Stmol (references/01-...), теговая схема — из nnikitochka.
   Продукт: токен из .env → вставил ссылку на трек → нажал скачать → файл с тегами в downloads/.
   UI-тексты приложения — русские. OpenSpec-артефакты (proposal, design, tasks, specs) — тоже русские,
   кроме normative keywords MUST/SHALL/MUST NOT и заголовков сценариев WHEN/THEN/AND.
