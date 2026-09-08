@@ -1,0 +1,24 @@
+schema: spec-driven
+
+context: |
+  YandexMusicDownloader — личное приложение для скачивания музыки с Яндекс Музыки в FLAC (с fallback на MP3).
+  Стек не выбран (кандидаты: Python + yandex-music-api + mutagen vs Go single-binary, см. docs/09-stack-options.md).
+  Продукт: токен из .env → вставил ссылку на трек → нажал скачать → файл с тегами в downloads/.
+  UI-тексты приложения — русские. OpenSpec-артефакты (proposal, design, tasks, specs) — тоже русские,
+  кроме normative keywords MUST/SHALL/MUST NOT и заголовков сценариев WHEN/THEN/AND.
+
+rules:
+  specs:
+    - "Текст requirements и сценариев — русский"
+    - "В каждом ### Requirement: обязательно MUST, SHALL или MUST NOT (не «ДОЛЖЕН») — иначе validate падает"
+    - "Main spec (openspec/specs/): секции ## Purpose и ## Requirements"
+    - "Delta spec (openspec/changes/*/specs/): ## ADDED/MODIFIED/REMOVED Requirements"
+    - "Каждый requirement — минимум один #### Scenario: с WHEN/THEN"
+    - "Capability = подсистема (track-download, audio-tagging), не отдельная фича"
+    - "После правок запускать openspec validate --all"
+  proposal:
+    - "Русский язык, кратко: что и зачем"
+  design:
+    - "Русский язык: как реализовать, trade-offs"
+  tasks:
+    - "Русский язык, чекбоксы - [ ] / - [x]"

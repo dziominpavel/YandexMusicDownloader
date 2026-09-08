@@ -1,0 +1,25 @@
+# токен и музыка — никогда в git
+.env
+downloads/
+*.mp3
+*.flac
+*.m4a
+*.tmp
+*.artifact-*
+
+# снепшоты чужих репо для анализа — не коммитим (7+ МБ, чужие лицензии)
+references/
+
+# python (если выберем)
+__pycache__/
+.venv/
+*.pyc
+
+# go (если выберем)
+bin/
+yamdl
+*.exe
+
+# ide
+.vscode/
+.idea/

@@ -1,0 +1,42 @@
+---
+description: Базовый контекст проекта YandexMusicDownloader
+alwaysApply: true
+---
+
+# YandexMusicDownloader — качалка музыки с Яндекс Музыки
+
+## Продукт
+
+Токен из `.env` → вставил ссылку на трек → «Скачать» → FLAC с тегами в `downloads/`.
+Личная коллекция, приоритет — lossless, fallback на лучший MP3 с пометкой.
+
+## Стек
+
+Не выбран (см. `docs/09-stack-options.md`): Python + `yandex-music-api` + `mutagen` vs Go single-binary.
+Пока стека нет — только `docs/`, `references/`, `openspec/`. Код без решения пользователя не писать.
+
+## Критичные правила
+
+- **FLAC first** — MP3 только fallback.
+- **Теги обязательны** — файл без тегов = брак.
+- **Потоковая запись** — не держать файл в RAM; публикация `temp → rename`.
+- **Токен никогда в git** — только `.env`, в репо лишь `.env.example`.
+- **`references/` не коммитить** — снепшоты чужих репо для анализа.
+
+## Документация (читать при изменениях)
+
+1. `AGENTS.md` — always-on правила.
+2. `docs/01-overview.md`, `docs/08-requirements.md` — цель и требования v0.1.
+3. `openspec/specs/track-download/spec.md`, `openspec/specs/audio-tagging/spec.md` — формальные спеки.
+4. `docs/02..06-*.md` — разбор доноров и сравнение.
+
+## OpenSpec
+
+- Новые фичи — через `/opsx-propose → /opsx-apply → /opsx-archive`.
+- Артефакты на русском, keywords — `MUST/SHALL/MUST NOT`.
+- Проверка: `openspec validate --all`.
+
+## Язык
+
+- UI-тексты и доки — **русский**.
+- Код и имена — **английский**.
