@@ -39,3 +39,37 @@ func TestParseRejectsNonTrack(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePlaylistUUID(t *testing.T) {
+	uuid := "4dc94b2f-e96b-2daf-a53c-ce71846901b3"
+	cases := []struct{ in, want string }{
+		{"https://music.yandex.by/playlists/" + uuid, uuid},
+		{"https://music.yandex.ru/playlists/" + uuid + "?utm_source=web&utm_medium=copy_link", uuid},
+		{"https://music.yandex.ru/playlists/lk." + uuid, "lk." + uuid},
+		{"https://music.yandex.com/playlists/ps." + uuid + "?from=share", "ps." + uuid},
+		{"  https://music.yandex.kz/playlists/" + uuid + "  ", uuid},
+	}
+	for _, c := range cases {
+		ref, err := Parse(c.in)
+		if err != nil {
+			t.Errorf("Parse(%q) failed: %v", c.in, err)
+			continue
+		}
+		if ref.Kind != KindPlaylist || ref.PlaylistUUID != c.want {
+			t.Errorf("Parse(%q) = %+v, want playlist %q", c.in, ref, c.want)
+		}
+	}
+}
+
+func TestParsePlaylistRejectsBadUUID(t *testing.T) {
+	for _, in := range []string{
+		"https://music.yandex.ru/playlists/not-a-uuid",
+		"https://music.yandex.ru/playlists/123",
+		"https://music.yandex.ru/playlists/p.4dc94b2f-e96b-2daf-a53c-ce71846901b3",
+		"https://music.yandex.ru/playlists/lk.------------------------------------",
+	} {
+		if _, err := Parse(in); err == nil {
+			t.Errorf("Parse(%q) must fail", in)
+		}
+	}
+}

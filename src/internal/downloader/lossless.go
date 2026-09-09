@@ -180,32 +180,44 @@ type Result struct {
 // Download fetches a track in the best available quality:
 // lossless first, MP3 fallback. Emits lifecycle events.
 func (c *Client) Download(trackID, outputDir string, emit func(Event)) (res Result, err error) {
+	return c.DownloadWithProgress(trackID, outputDir, emit, nil)
+}
+
+// DownloadWithProgress is Download with live byte progress.
+func (c *Client) DownloadWithProgress(trackID, outputDir string, emit func(Event), onProgress ProgressFunc) (res Result, err error) {
 	track, err := c.fetchTrack(trackID)
 	if err != nil {
-		emitEvent(emit, Event{Kind: KindFailed, Label: trackID, Detail: err.Error()})
+		emitEvent(emit, Event{Kind: KindFailed, Label: trackID, TrackID: trackID, Detail: err.Error()})
 		return Result{}, err
 	}
+	return c.DownloadTrack(track, outputDir, emit, onProgress)
+}
+
+// DownloadTrack fetches an already-resolved track in the best quality.
+// The playlist batch uses it to avoid an extra metadata request per track.
+func (c *Client) DownloadTrack(track *Track, outputDir string, emit func(Event), onProgress ProgressFunc) (res Result, err error) {
 	label := track.Label()
-	emitEvent(emit, Event{Kind: KindDownloading, Label: label})
+	tid := track.ID
+	emitEvent(emit, Event{Kind: KindDownloading, Label: label, TrackID: tid})
 	defer func() {
 		if err == nil {
 			res.Label = label
-			emitEvent(emit, Event{Kind: KindDone, Label: label, Format: res.Format, Fallback: res.Fallback, Converted: res.Converted})
+			emitEvent(emit, Event{Kind: KindDone, Label: label, TrackID: tid, Format: res.Format, Fallback: res.Fallback, Converted: res.Converted})
 		} else if errors.Is(err, ErrAlreadyExists) {
-			emitEvent(emit, Event{Kind: KindSkipped, Label: label, Detail: res.Path})
+			emitEvent(emit, Event{Kind: KindSkipped, Label: label, TrackID: tid, Detail: res.Path})
 		} else {
-			emitEvent(emit, Event{Kind: KindFailed, Label: label, Detail: err.Error()})
+			emitEvent(emit, Event{Kind: KindFailed, Label: label, TrackID: tid, Detail: err.Error()})
 		}
 	}()
 
 	if uid, uerr := c.accountUID(); uerr == nil {
-		if res, lerr := c.downloadLossless(track, outputDir, uid); lerr == nil || errors.Is(lerr, ErrAlreadyExists) {
+		if res, lerr := c.downloadLossless(track, outputDir, uid, onProgress); lerr == nil || errors.Is(lerr, ErrAlreadyExists) {
 			return res, lerr
 		}
 		// Any other lossless failure falls back to MP3 below.
 	}
 
-	path, err := c.DownloadMP3(trackID, outputDir, nil) // events emitted by outer defer
+	path, err := c.downloadMP3Track(track, outputDir, nil, onProgress) // events emitted by outer defer
 	if err != nil {
 		if errors.Is(err, ErrAlreadyExists) {
 			return Result{Path: path, Format: "MP3", Fallback: true}, err
@@ -217,7 +229,7 @@ func (c *Client) Download(trackID, outputDir string, emit func(Event)) (res Resu
 }
 
 // downloadLossless streams, decrypts, tags and publishes a lossless file.
-func (c *Client) downloadLossless(track *Track, outputDir string, uid int64) (Result, error) {
+func (c *Client) downloadLossless(track *Track, outputDir string, uid int64, onProgress ProgressFunc) (Result, error) {
 	info, err := c.losslessFileInfo(track.ID, uid)
 	if err != nil {
 		return Result{}, err
@@ -259,7 +271,7 @@ func (c *Client) downloadLossless(track *Track, outputDir string, uid int64) (Re
 
 	var lastErr error
 	for _, rawURL := range info.URLs {
-		tmp, err := c.streamLosslessTemp(rawURL, outputDir, stream, streamFormat, losslessExt(info.Codec))
+		tmp, err := c.streamLosslessTemp(rawURL, outputDir, stream, streamFormat, losslessExt(info.Codec), track.ID, track.Label(), onProgress)
 		if err != nil {
 			lastErr = err
 			continue
@@ -295,7 +307,8 @@ func (c *Client) downloadLossless(track *Track, outputDir string, uid int64) (Re
 // streamLosslessURL downloads one URL with streaming decrypt and flac magic check.
 // streamLosslessTemp downloads one URL into a temp file with streaming
 // decrypt and flac magic check. Returns the temp path.
-func (c *Client) streamLosslessTemp(rawURL, dir string, stream cipher.Stream, format, ext string) (string, error) {
+// Network bytes are reported via onProgress (nil = silent).
+func (c *Client) streamLosslessTemp(rawURL, dir string, stream cipher.Stream, format, ext, trackID, label string, onProgress ProgressFunc) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
@@ -324,9 +337,13 @@ func (c *Client) streamLosslessTemp(rawURL, dir string, stream cipher.Stream, fo
 		return "", fmt.Errorf("downloader: GET file: http %d", resp.StatusCode)
 	}
 
-	var src io.Reader = resp.Body
+	total := resp.ContentLength
+	counter := newProgressReader(resp.Body, total, func(done, total int64) {
+		emitProgress(onProgress, Progress{TrackID: trackID, Label: label, Done: done, Total: total, Percent: percentOf(done, total)})
+	})
+	var src io.Reader = counter
 	if stream != nil {
-		src = &cipher.StreamReader{S: stream, R: resp.Body}
+		src = &cipher.StreamReader{S: stream, R: counter}
 	}
 	// Peek magic without loading the file: fLaC for FLAC.
 	head := make([]byte, 4)
@@ -354,5 +371,6 @@ func (c *Client) streamLosslessTemp(rawURL, dir string, stream cipher.Stream, fo
 		os.Remove(tmpName)
 		return "", err
 	}
+	emitProgress(onProgress, Progress{TrackID: trackID, Label: label, Done: counter.done, Total: total, Percent: percentOf(counter.done, total)})
 	return tmpName, nil
 }

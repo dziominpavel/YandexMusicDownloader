@@ -44,7 +44,7 @@ func TestPublishTempRenames(t *testing.T) {
 func TestDownloadToTempFailureLeavesNothing(t *testing.T) {
 	dir := t.TempDir()
 	c := NewClient("")
-	if _, err := c.downloadToTemp("http://127.0.0.1:1/nope", dir, ".mp3"); err == nil {
+	if _, err := c.downloadToTemp("http://127.0.0.1:1/nope", dir, ".mp3", "1", "Artist — Title", nil); err == nil {
 		t.Fatal("must fail")
 	}
 	entries, err := os.ReadDir(dir)

@@ -82,20 +82,31 @@ func buildDirectLink(info directLinkXML) string {
 // DownloadMP3 downloads the best MP3 for a track ID into outputDir.
 // Pipeline: temp download → tag hook → atomic rename. Emits lifecycle events.
 func (c *Client) DownloadMP3(trackID, outputDir string, emit func(Event)) (dest string, err error) {
+	return c.DownloadMP3WithProgress(trackID, outputDir, emit, nil)
+}
+
+// DownloadMP3WithProgress is DownloadMP3 with live byte progress.
+func (c *Client) DownloadMP3WithProgress(trackID, outputDir string, emit func(Event), onProgress ProgressFunc) (dest string, err error) {
 	track, err := c.fetchTrack(trackID)
 	if err != nil {
-		emitEvent(emit, Event{Kind: KindFailed, Label: trackID, Detail: err.Error()})
+		emitEvent(emit, Event{Kind: KindFailed, Label: trackID, TrackID: trackID, Detail: err.Error()})
 		return "", err
 	}
+	return c.downloadMP3Track(track, outputDir, emit, onProgress)
+}
+
+// downloadMP3Track runs the MP3 pipeline for an already-resolved track.
+func (c *Client) downloadMP3Track(track *Track, outputDir string, emit func(Event), onProgress ProgressFunc) (dest string, err error) {
+	trackID := track.ID
 	label := track.Label()
-	emitEvent(emit, Event{Kind: KindDownloading, Label: label})
+	emitEvent(emit, Event{Kind: KindDownloading, Label: label, TrackID: trackID})
 	defer func() {
 		if err == nil {
-			emitEvent(emit, Event{Kind: KindDone, Label: label, Format: "MP3"})
+			emitEvent(emit, Event{Kind: KindDone, Label: label, TrackID: trackID, Format: "MP3"})
 		} else if errors.Is(err, ErrAlreadyExists) {
-			emitEvent(emit, Event{Kind: KindSkipped, Label: label, Detail: dest})
+			emitEvent(emit, Event{Kind: KindSkipped, Label: label, TrackID: trackID, Detail: dest})
 		} else {
-			emitEvent(emit, Event{Kind: KindFailed, Label: label, Detail: err.Error()})
+			emitEvent(emit, Event{Kind: KindFailed, Label: label, TrackID: trackID, Detail: err.Error()})
 		}
 	}()
 
@@ -116,7 +127,7 @@ func (c *Client) DownloadMP3(trackID, outputDir string, emit func(Event)) (dest 
 	if err != nil {
 		return "", err
 	}
-	tmp, err := c.downloadToTemp(link, outputDir, ".mp3")
+	tmp, err := c.downloadToTemp(link, outputDir, ".mp3", track.ID, label, onProgress)
 	if err != nil {
 		return "", err
 	}
@@ -132,7 +143,8 @@ func (c *Client) DownloadMP3(trackID, outputDir string, emit func(Event)) (dest 
 
 // downloadToTemp streams url into a temp file in dir. The temp file carries
 // ext so format dispatch (tagging) works before publish. No full file in RAM.
-func (c *Client) downloadToTemp(url, dir, ext string) (string, error) {
+// Received bytes are reported via onProgress (nil = silent).
+func (c *Client) downloadToTemp(url, dir, ext, trackID, label string, onProgress ProgressFunc) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("downloader: mkdir: %w", err)
 	}
@@ -160,11 +172,16 @@ func (c *Client) downloadToTemp(url, dir, ext string) (string, error) {
 		os.Remove(tmpName)
 		return "", fmt.Errorf("downloader: GET file: http %d", resp.StatusCode)
 	}
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
+	total := resp.ContentLength
+	src := newProgressReader(resp.Body, total, func(done, total int64) {
+		emitProgress(onProgress, Progress{TrackID: trackID, Label: label, Done: done, Total: total, Percent: percentOf(done, total)})
+	})
+	if _, err := io.Copy(tmp, src); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
 		return "", fmt.Errorf("downloader: write: %w", err)
 	}
+	emitProgress(onProgress, Progress{TrackID: trackID, Label: label, Done: src.done, Total: total, Percent: percentOf(src.done, total)})
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
 		return "", fmt.Errorf("downloader: close: %w", err)

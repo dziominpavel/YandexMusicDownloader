@@ -9,8 +9,16 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+)
+
+// DefaultWorkers is the playlist pool size when PLAYLIST_WORKERS is
+// missing or invalid. MaxWorkers caps it to bound API pressure.
+const (
+	DefaultWorkers = 3
+	MaxWorkers     = 10
 )
 
 // Config holds runtime settings. Token may be empty (preview-only mode).
@@ -20,6 +28,8 @@ type Config struct {
 	// ConvertM4A turns ALAC-in-M4A lossless into plain FLAC via the
 	// ffmpeg.exe sidecar. Default true; CONVERT_M4A=false disables.
 	ConvertM4A bool
+	// Workers caps parallel playlist downloads (PLAYLIST_WORKERS, 1..MaxWorkers).
+	Workers int
 }
 
 // DefaultPath returns the .env path next to the running executable.
@@ -35,7 +45,7 @@ func DefaultPath() (string, error) {
 // (empty config = preview-only mode). OUTPUT_DIR defaults to ./downloads,
 // CONVERT_M4A defaults to true.
 func Load(path string) (Config, error) {
-	cfg := Config{OutputDir: "./downloads", ConvertM4A: true}
+	cfg := Config{OutputDir: "./downloads", ConvertM4A: true, Workers: DefaultWorkers}
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -69,6 +79,10 @@ func Load(path string) (Config, error) {
 			switch strings.ToLower(v) {
 			case "0", "false", "no", "off":
 				cfg.ConvertM4A = false
+			}
+		case "PLAYLIST_WORKERS":
+			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 1 && n <= MaxWorkers {
+				cfg.Workers = n
 			}
 		}
 	}

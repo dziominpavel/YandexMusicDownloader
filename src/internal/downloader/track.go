@@ -78,11 +78,17 @@ type Client struct {
 	ConvertM4A bool
 	// fetchTrack resolves metadata; override in tests to avoid network.
 	fetchTrack func(string) (*Track, error)
+	// downloadOne runs the per-track pipeline; override in tests.
+	// Nil means DownloadTrack.
+	downloadOne func(*Track, string, func(Event), ProgressFunc) (Result, error)
+	// PlaylistWorkers caps parallel playlist downloads (PLAYLIST_WORKERS).
+	// Zero or negative means DefaultWorkers (3); above MaxWorkers is capped.
+	PlaylistWorkers int
 }
 
 // NewClient builds a downloader. Empty token = 30-second previews only.
 func NewClient(token string) *Client {
-	c := &Client{token: token, http: &http.Client{Timeout: 30 * time.Second}, ConvertM4A: true}
+	c := &Client{token: token, http: &http.Client{Timeout: 30 * time.Second}, ConvertM4A: true, PlaylistWorkers: defaultPlaylistWorkers}
 	c.fetchTrack = c.TrackInfo
 	return c
 }

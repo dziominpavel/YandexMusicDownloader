@@ -11,31 +11,164 @@
   #dl:disabled { cursor: wait; opacity: 0.6; }
   #log { margin-top: 12px; white-space: pre-wrap; font-family: Consolas, monospace; font-size: 13px; }
   .done { color: #7ee787; } .err { color: #ff7b72; } .info { color: #79c0ff; }
+  #prog { margin-top: 8px; font-family: Consolas, monospace; font-size: 13px; }
+  .prow { margin: 2px 0; }
+  .pbar { display: inline-block; width: 160px; height: 8px; background: #333; vertical-align: middle; margin: 0 8px; }
+  .pfill { height: 100%; background: #79c0ff; width: 0%; }
+  #tracks { margin-top: 8px; font-family: Consolas, monospace; font-size: 13px; }
+  .thead { color: #ddd; margin: 4px 0; }
+  .trow { display: flex; gap: 8px; align-items: center; margin: 2px 0; }
+  .tname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tbar { display: inline-block; width: 120px; height: 8px; background: #333; flex: none; }
+  .tfill { display: block; height: 100%; background: #79c0ff; width: 0%; }
+  .tstat { flex: none; min-width: 170px; }
 </style>
 </head>
 <body>
 <h2>YandexMusicDownloader</h2>
 <div id="row">
-  <input id="link" placeholder="Вставь ссылку на трек: music.yandex.ru/album/.../track/...">
+  <input id="link" placeholder="Вставь ссылку на трек или плейлист: music.yandex.ru/...">
   <button id="dl">Скачать</button>
 </div>
+<div id="tracks"></div>
+<div id="prog"></div>
 <div id="log"></div>
 <script>
   const log = document.getElementById('log');
+  const prog = document.getElementById('prog');
+  const tracks = document.getElementById('tracks');
   const btn = document.getElementById('dl');
   const input = document.getElementById('link');
+  const rows = {};
+  const trows = {};
   function line(text, cls) {
     const div = document.createElement('div');
     if (cls) div.className = cls;
     div.textContent = text;
     log.appendChild(div);
   }
-  window.runtime.EventsOn('log', (text, kind) => line(text, kind));
+  function fmtMB(b) { return (b / 1048576).toFixed(1); }
+  function trackBar(id, pct, done, total) {
+    const r = trows[id];
+    if (!r) return false;
+    const pctNum = Number(pct);
+    const hasTotal = Number(total) > 0 && pctNum >= 0;
+    r.fill.style.width = hasTotal ? pctNum + '%' : '100%';
+    r.bar.title = hasTotal
+      ? pctNum + '% ' + fmtMB(Number(done)) + '/' + fmtMB(Number(total)) + ' МБ'
+      : fmtMB(Number(done)) + ' МБ';
+    return true;
+  }
+  function progress(id, label, pct, done, total) {
+    if (trackBar(id, pct, done, total)) return;
+    let r = rows[id];
+    if (!r) {
+      r = document.createElement('div');
+      r.className = 'prow';
+      const name = document.createElement('span');
+      name.className = 'pname';
+      const bar = document.createElement('span');
+      bar.className = 'pbar';
+      const fill = document.createElement('span');
+      fill.className = 'pfill';
+      bar.appendChild(fill);
+      const stat = document.createElement('span');
+      stat.className = 'pstat info';
+      r.appendChild(name);
+      r.appendChild(bar);
+      r.appendChild(stat);
+      prog.appendChild(r);
+      rows[id] = r;
+    }
+    const pctNum = Number(pct);
+    if (pctNum === 100) {
+      r.remove();
+      delete rows[id];
+      return;
+    }
+    const hasTotal = Number(total) > 0 && pctNum >= 0;
+    r.children[0].textContent = label;
+    r.children[1].children[0].style.width = hasTotal ? pctNum + '%' : '100%';
+    r.children[2].textContent = hasTotal
+      ? pctNum + '% ' + fmtMB(Number(done)) + '/' + fmtMB(Number(total)) + ' МБ'
+      : fmtMB(Number(done)) + ' МБ';
+  }
+  function hideRowsByLabel(text) {
+    for (const k in rows) {
+      const r = rows[k];
+      const name = r && r.children[0].textContent;
+      if (name && text.includes(name)) {
+        r.remove();
+        delete rows[k];
+      }
+    }
+  }
+  function clearRows() {
+    prog.innerHTML = '';
+    for (const k in rows) delete rows[k];
+  }
+  function playlistStart(title, count) {
+    tracks.innerHTML = '';
+    for (const k in trows) delete trows[k];
+    const h = document.createElement('div');
+    h.className = 'thead';
+    h.textContent = '[playlist] ' + title + ' (' + count + ' треков)';
+    tracks.appendChild(h);
+  }
+  function trackList(items) {
+    items.forEach((pair) => {
+      const id = pair[0], label = pair[1];
+      if (trows[id]) return;
+      const r = document.createElement('div');
+      r.className = 'trow';
+      const name = document.createElement('span');
+      name.className = 'tname';
+      name.textContent = label;
+      name.title = label;
+      const bar = document.createElement('span');
+      bar.className = 'tbar';
+      const fill = document.createElement('span');
+      fill.className = 'tfill';
+      fill.style.display = 'block';
+      bar.appendChild(fill);
+      const stat = document.createElement('span');
+      stat.className = 'tstat';
+      stat.textContent = '[queued]';
+      r.appendChild(name);
+      r.appendChild(bar);
+      r.appendChild(stat);
+      tracks.appendChild(r);
+      trows[id] = { row: r, stat: stat, bar: bar, fill: fill };
+    });
+  }
+  function trackStatus(id, status, kind) {
+    let t = trows[id];
+    if (!t) {
+      trackList([[id, '']]);
+      t = trows[id];
+      if (!t) return;
+    }
+    t.stat.textContent = status;
+    t.stat.className = 'tstat' + (kind ? ' ' + kind : '');
+  }
+  window.runtime.EventsOn('playlist-start', (title, count) => playlistStart(title, count));
+  window.runtime.EventsOn('tracks', (items) => trackList(items));
+  window.runtime.EventsOn('track-status', (id, status, kind) => trackStatus(id, status, kind));
+  window.runtime.EventsOn('log', (text, kind) => {
+    line(text, kind);
+    if (text.startsWith('[finished]')) clearRows();
+    else if (text.startsWith('[done] ') || text.startsWith('[skip] ') || text.startsWith('[error] ')) hideRowsByLabel(text);
+  });
+  window.runtime.EventsOn('progress', (id, label, pct, done, total) => progress(id, label, pct, done, total));
   btn.onclick = async () => {
     const link = input.value.trim();
     if (!link) return;
     input.value = '';
     input.focus();
+    prog.innerHTML = '';
+    for (const k in rows) delete rows[k];
+    tracks.innerHTML = '';
+    for (const k in trows) delete trows[k];
     btn.disabled = true;
     try {
       const res = await window.go.ui.App.Download(link);
