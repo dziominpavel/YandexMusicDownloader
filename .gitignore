@@ -20,6 +20,9 @@ bin/
 yamdl
 *.exe
 
+# store: release artifacts (pack-zip.ps1 output)
+dist/
+
 # ide
 .vscode/
 .idea/
