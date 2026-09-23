@@ -1,0 +1,4 @@
+name: YandexMusicDownloader
+description: "Скачивание музыки с Яндекс Музыки в FLAC (fallback на MP3): вставьте ссылку на трек — файл с тегами и обложкой появится в downloads/."
+icon: assets/icon.png
+requirements: "Windows 10 или новее"
