@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"yamdl/internal/norm"
 )
 
 func TestBestOptionPicksMaxBitrate(t *testing.T) {
@@ -59,35 +61,6 @@ func TestDestPathFlat(t *testing.T) {
 	}
 }
 
-func TestSortArtistName(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"Амирчик", "Амирчик"},         // Cyrillic stays
-		{"Mari Sa", "Мari Sa"},         // Latin M → Cyrillic М
-		{"HEXXENMIND", "НEXXENMIND"},   // Latin H → Cyrillic Н (first char only)
-		{"Noize MC", sortPrefix + "Noize MC"},     // N has no twin → prefix
-		{"VAVAN", sortPrefix + "VAVAN"},           // V has no twin → prefix
-		{"7Б", sortPrefix + "7Б"},                 // digit → prefix
-		{"JANAGA", sortPrefix + "JANAGA"},         // J has no twin → prefix
-		{"", ""},                       // empty stays empty
-	}
-	for _, c := range cases {
-		if got := sortArtistName(c.in); got != c.want {
-			t.Errorf("sortArtistName(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
-func TestSortPrefixOrder(t *testing.T) {
-	// Byte-wise (codepoint) order must be: Latin < prefix < Cyrillic.
-	// sortPrefix itself must be a single invisible rune.
-	if sortPrefix != "\u03b9 " {
-		t.Fatalf("prefix changed: %q", sortPrefix)
-	}
-	if !("zzz" < sortPrefix+"Noize MC" && sortPrefix+"Noize MC" < "Амирчик") {
-		t.Fatal("order must be: latin < prefixed < cyrillic")
-	}
-}
-
 func TestDisplayArtistRussianDetection(t *testing.T) {
 	cases := []struct {
 		artists []string
@@ -100,11 +73,11 @@ func TestDisplayArtistRussianDetection(t *testing.T) {
 		{[]string{"Nirvana"}, "Smells Like Teen Spirit", "Nirvana"},
 		// Russian via Cyrillic title → transform applies.
 		{[]string{"Mari Sa"}, "Моя Любовь", "Мari Sa"},
-		{[]string{"Noize MC"}, "Светлая полоса", sortPrefix + "Noize MC"},
+		{[]string{"Noize MC"}, "Светлая полоса", norm.SortPrefix + "Noize MC"},
 		{[]string{"HEXXENMIND"}, "Камин", "НEXXENMIND"},
-		{[]string{"JANAGA"}, "Солнце, море и смех", sortPrefix + "JANAGA"},
+		{[]string{"JANAGA"}, "Солнце, море и смех", norm.SortPrefix + "JANAGA"},
 		// Russian via Cyrillic artist → transform applies.
-		{[]string{"7Б"}, "Знаю! Будет!", sortPrefix + "7Б"},
+		{[]string{"7Б"}, "Знаю! Будет!", norm.SortPrefix + "7Б"},
 		{[]string{"Амирчик"}, "Не верю", "Амирчик"},
 		// No artist at all.
 		{nil, "Трек", ""},
@@ -123,8 +96,8 @@ func TestDestPathUserExamples(t *testing.T) {
 		want  string
 	}{
 		{&Track{Artists: []string{"Mari Sa"}, Title: "Моя Любовь"}, ".m4a", "Мari Sa - Моя Любовь.m4a"},
-		{&Track{Artists: []string{"Noize MC"}, Title: "Светлая полоса"}, ".flac", sortPrefix + "Noize MC - Светлая полоса.flac"},
-		{&Track{Artists: []string{"7Б"}, Title: "Знаю! Будет!"}, ".flac", sortPrefix + "7Б - Знаю! Будет!.flac"},
+		{&Track{Artists: []string{"Noize MC"}, Title: "Светлая полоса"}, ".flac", norm.SortPrefix + "Noize MC - Светлая полоса.flac"},
+		{&Track{Artists: []string{"7Б"}, Title: "Знаю! Будет!"}, ".flac", norm.SortPrefix + "7Б - Знаю! Будет!.flac"},
 		{&Track{Artists: []string{"Амирчик"}, Title: "Не верю"}, ".flac", "Амирчик - Не верю.flac"},
 		{&Track{Artists: []string{"Metallica"}, Title: "Enter Sandman"}, ".mp3", "Metallica - Enter Sandman.mp3"},
 	}

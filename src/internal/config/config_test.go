@@ -38,18 +38,45 @@ func TestLoadParsesEnv(t *testing.T) {
 	}
 }
 
+func TestLoadLibraryDir(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"задан", "LIBRARY_DIR=D:/Music\n", "D:/Music"},
+		{"в кавычках", `LIBRARY_DIR="D:/Музыка"`, "D:/Музыка"},
+		{"пустой", "LIBRARY_DIR=\n", ""},
+		{"нет параметра", "OUTPUT_DIR=./x\n", ""},
+	}
+	for _, c := range cases {
+		dir := t.TempDir()
+		p := filepath.Join(dir, ".env")
+		if err := os.WriteFile(p, []byte(c.body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if cfg.LibraryDir != c.want {
+			t.Errorf("%s: LibraryDir = %q, want %q", c.name, cfg.LibraryDir, c.want)
+		}
+	}
+}
+
 func TestLoadPlaylistWorkers(t *testing.T) {
 	cases := []struct {
 		body string
 		want int
 	}{
-		{"", DefaultWorkers},                       // missing → default
-		{"PLAYLIST_WORKERS=10", 10},                // max allowed
-		{"PLAYLIST_WORKERS=1", 1},                  // min allowed
-		{"PLAYLIST_WORKERS=0", DefaultWorkers},     // out of range → default
-		{"PLAYLIST_WORKERS=99", DefaultWorkers},    // out of range → default
-		{"PLAYLIST_WORKERS=many", DefaultWorkers},  // garbage → default
-		{"PLAYLIST_WORKERS= 5 ", 5},                // surrounding spaces ok
+		{"", DefaultWorkers},                      // missing → default
+		{"PLAYLIST_WORKERS=10", 10},               // max allowed
+		{"PLAYLIST_WORKERS=1", 1},                 // min allowed
+		{"PLAYLIST_WORKERS=0", DefaultWorkers},    // out of range → default
+		{"PLAYLIST_WORKERS=99", DefaultWorkers},   // out of range → default
+		{"PLAYLIST_WORKERS=many", DefaultWorkers}, // garbage → default
+		{"PLAYLIST_WORKERS= 5 ", 5},               // surrounding spaces ok
 	}
 	for _, c := range cases {
 		dir := t.TempDir()

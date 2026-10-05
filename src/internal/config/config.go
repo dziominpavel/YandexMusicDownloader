@@ -30,6 +30,9 @@ type Config struct {
 	ConvertM4A bool
 	// Workers caps parallel playlist downloads (PLAYLIST_WORKERS, 1..MaxWorkers).
 	Workers int
+	// LibraryDir is the user's music collection root (LIBRARY_DIR).
+	// Empty = collection indexing and duplicate checks are off.
+	LibraryDir string
 }
 
 // DefaultPath returns the .env path next to the running executable.
@@ -80,6 +83,8 @@ func Load(path string) (Config, error) {
 			case "0", "false", "no", "off":
 				cfg.ConvertM4A = false
 			}
+		case "LIBRARY_DIR":
+			cfg.LibraryDir = v
 		case "PLAYLIST_WORKERS":
 			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 1 && n <= MaxWorkers {
 				cfg.Workers = n

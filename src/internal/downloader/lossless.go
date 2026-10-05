@@ -202,6 +202,9 @@ func (c *Client) DownloadTrack(track *Track, outputDir string, emit func(Event),
 	defer func() {
 		if err == nil {
 			res.Label = label
+			if res.Path != "" && c.OnPublished != nil {
+				c.OnPublished(res.Path)
+			}
 			emitEvent(emit, Event{Kind: KindDone, Label: label, TrackID: tid, Format: res.Format, Fallback: res.Fallback, Converted: res.Converted})
 		} else if errors.Is(err, ErrAlreadyExists) {
 			emitEvent(emit, Event{Kind: KindSkipped, Label: label, TrackID: tid, Detail: res.Path})

@@ -3,7 +3,8 @@ package downloader
 import (
 	"path/filepath"
 	"strings"
-	"unicode/utf8"
+
+	"yamdl/internal/norm"
 )
 
 // filenameReplacer sanitizes names for Windows/Unix filesystems.
@@ -16,62 +17,6 @@ var filenameReplacer = strings.NewReplacer(
 func cleanSegment(s string) string {
 	s = strings.TrimSpace(filenameReplacer.Replace(s))
 	return strings.Trim(s, ". ")
-}
-
-// cyrillicTwin maps a Latin first letter to its Cyrillic look-alike.
-// Only these pairs convert; any other first character keeps its form
-// and the name gets sortPrefix instead (see sortArtistName).
-var cyrillicTwin = map[rune]rune{
-	'A': 'А', 'B': 'В', 'C': 'С', 'E': 'Е', 'H': 'Н',
-	'K': 'К', 'M': 'М', 'O': 'О', 'P': 'Р', 'T': 'Т', 'X': 'Х',
-	'a': 'а', 'c': 'с', 'e': 'е', 'h': 'н', 'k': 'к',
-	'm': 'м', 'o': 'о', 'p': 'р', 't': 'т', 'x': 'х',
-}
-
-// sortPrefix pushes names that cannot start with Cyrillic (Latin letters
-// without a Cyrillic twin, digits, symbols) into the gap between the
-// Latin and Cyrillic blocks: U+03B9 sorts after Latin (ends U+007A)
-// and before Cyrillic (starts U+0400), both in byte order and in
-// Windows linguistic sort. (Invisible U+00AD was tried: linguistic
-// sort ignores it, so prefixed names floated before all Latin.)
-const sortPrefix = "\u03b9 "
-
-// isCyrillic reports Cyrillic block letters (U+0400–U+04FF, incl. Ё/ё).
-func isCyrillic(r rune) bool {
-	return r >= 0x0400 && r <= 0x04FF
-}
-
-// sortArtistName applies the first-letter sorting rule so Russian artists
-// sort apart from foreign ones:
-//   - Cyrillic first letter: unchanged ("Амирчик");
-//   - Latin first letter with a Cyrillic twin: replaced (first char only)
-//     ("Mari Sa" → "Мari Sa", "HEXXENMIND" → "НEXXENMIND");
-//   - anything else (G, digits, symbols): iota prefix (U+03B9 + space),
-//     so the name sorts after Latin and before Cyrillic.
-func sortArtistName(name string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return ""
-	}
-	r, _ := utf8.DecodeRuneInString(name)
-	switch {
-	case isCyrillic(r):
-		return name
-	case cyrillicTwin[r] != 0:
-		return string(cyrillicTwin[r]) + name[len(string(r)):]
-	default:
-		return sortPrefix + name
-	}
-}
-
-// hasCyrillic reports whether s contains at least one Cyrillic letter.
-func hasCyrillic(s string) bool {
-	for _, r := range s {
-		if isCyrillic(r) {
-			return true
-		}
-	}
-	return false
 }
 
 // displayArtist joins the artists and applies the sorting rule — but only
@@ -90,10 +35,10 @@ func displayArtist(artists []string, title string) string {
 		return ""
 	}
 	name := cleanSegment(strings.Join(names, ", "))
-	if !hasCyrillic(name) && !hasCyrillic(title) {
+	if !norm.HasCyrillic(name) && !norm.HasCyrillic(title) {
 		return name
 	}
-	return sortArtistName(name)
+	return norm.SortArtistName(name)
 }
 
 // trackStem is the file base name without extension: "Artist - Title".

@@ -84,6 +84,10 @@ type Client struct {
 	// PlaylistWorkers caps parallel playlist downloads (PLAYLIST_WORKERS).
 	// Zero or negative means DefaultWorkers (3); above MaxWorkers is capped.
 	PlaylistWorkers int
+	// OnPublished, when set, receives the path of every file that was
+	// just published (after temp → rename). The UI uses it to keep the
+	// library index fresh without rescanning.
+	OnPublished func(path string)
 }
 
 // NewClient builds a downloader. Empty token = 30-second previews only.
@@ -91,6 +95,13 @@ func NewClient(token string) *Client {
 	c := &Client{token: token, http: &http.Client{Timeout: 30 * time.Second}, ConvertM4A: true, PlaylistWorkers: defaultPlaylistWorkers}
 	c.fetchTrack = c.TrackInfo
 	return c
+}
+
+// ResolveTrack fetches track metadata through the same path Download
+// uses (tests override fetchTrack). The UI resolves first so it can run
+// the duplicate check before any download starts.
+func (c *Client) ResolveTrack(id string) (*Track, error) {
+	return c.fetchTrack(id)
 }
 
 // runTagHook applies the tag hook (no-op when unset).
