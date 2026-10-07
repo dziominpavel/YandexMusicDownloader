@@ -26,8 +26,8 @@ func TestDownloadPlaylistSummary(t *testing.T) {
 	tracks := []*Track{
 		{ID: "1", Title: "T1", Artists: []string{"A"}, Available: true},
 		{ID: "2", Title: "T2", Artists: []string{"A"}, Available: true},
-		{ID: "1", Title: "T1", Artists: []string{"A"}, Available: true},   // duplicate
-		{ID: "3", Title: "T3", Artists: []string{"A"}, Available: false},  // unavailable
+		{ID: "1", Title: "T1", Artists: []string{"A"}, Available: true},    // duplicate
+		{ID: "3", Title: "T3", Artists: []string{"A"}, Available: false},   // unavailable
 		{ID: "fail", Title: "TF", Artists: []string{"A"}, Available: true}, // error
 	}
 	var skippedDetails []string

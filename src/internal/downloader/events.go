@@ -12,6 +12,8 @@ const (
 	KindSkipped EventKind = "skipped"
 	// KindFailed: "[error] Artist — Title: reason".
 	KindFailed EventKind = "failed"
+	// KindStopped: "[stopped] Artist — Title" (user pressed Stop; not an error).
+	KindStopped EventKind = "stopped"
 )
 
 // Event is one lifecycle fact the UI renders as a log line.

@@ -23,6 +23,9 @@ yamdl
 # store: release artifacts (pack-zip.ps1 output)
 dist/
 
+# runtime: кэш индекса коллекции (создаётся рядом с exe при запуске)
+library-index.json
+
 # ide
 .vscode/
 .idea/

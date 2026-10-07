@@ -18,15 +18,17 @@ func main() {
 		log.Fatal(err)
 	}
 	app := ui.NewApp()
+	width, height := app.InitialSize()
 	if err := wails.Run(&options.App{
 		Title:  "YandexMusicDownloader",
-		Width:  720,
-		Height: 480,
+		Width:  width,
+		Height: height,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		OnStartup: app.Startup,
-		Bind:      []any{app},
+		OnStartup:     app.Startup,
+		OnBeforeClose: app.BeforeClose,
+		Bind:          []any{app},
 	}); err != nil {
 		log.Fatal(err)
 	}

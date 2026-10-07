@@ -99,13 +99,21 @@ func (c *Client) DownloadMP3WithProgress(trackID, outputDir string, emit func(Ev
 func (c *Client) downloadMP3Track(track *Track, outputDir string, emit func(Event), onProgress ProgressFunc) (dest string, err error) {
 	trackID := track.ID
 	label := track.Label()
+	if c.Stopped() {
+		emitEvent(emit, Event{Kind: KindStopped, Label: label, TrackID: trackID})
+		return "", ErrStopped
+	}
 	emitEvent(emit, Event{Kind: KindDownloading, Label: label, TrackID: trackID})
 	defer func() {
-		if err == nil {
+		switch {
+		case err == nil:
 			emitEvent(emit, Event{Kind: KindDone, Label: label, TrackID: trackID, Format: "MP3"})
-		} else if errors.Is(err, ErrAlreadyExists) {
+		case errors.Is(err, ErrAlreadyExists):
 			emitEvent(emit, Event{Kind: KindSkipped, Label: label, TrackID: trackID, Detail: dest})
-		} else {
+		case errors.Is(err, ErrStopped) || c.Stopped():
+			err = ErrStopped
+			emitEvent(emit, Event{Kind: KindStopped, Label: label, TrackID: trackID})
+		default:
 			emitEvent(emit, Event{Kind: KindFailed, Label: label, TrackID: trackID, Detail: err.Error()})
 		}
 	}()

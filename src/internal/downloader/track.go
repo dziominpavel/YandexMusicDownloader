@@ -3,11 +3,14 @@
 package downloader
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -71,8 +74,6 @@ type Client struct {
 	http  *http.Client
 	// Tag runs between download and publish; nil skips tagging.
 	Tag TagFunc
-	// SkipCover disables cover-art embedding (text tags still apply).
-	SkipCover bool
 	// ConvertM4A turns ALAC-in-M4A lossless into plain FLAC via the
 	// ffmpeg.exe sidecar (see convert.go). No ffmpeg = M4A stays M4A.
 	ConvertM4A bool
@@ -88,6 +89,15 @@ type Client struct {
 	// just published (after temp → rename). The UI uses it to keep the
 	// library index fresh without rescanning.
 	OnPublished func(path string)
+
+	// Stop machinery for the «Остановить» button (stop.go): stopCtx is
+	// the context every request carries, stop marks the current job as
+	// stopped so the pool stops launching tracks. stopMu guards the ctx
+	// pair; stop is read lock-free.
+	stopMu     sync.Mutex
+	stopCtx    context.Context
+	stopCancel context.CancelFunc
+	stop       atomic.Bool
 }
 
 // NewClient builds a downloader. Empty token = 30-second previews only.
@@ -115,9 +125,11 @@ func (c *Client) runTagHook(path string, track *Track) error {
 	return nil
 }
 
-// newRequest builds an API request with the required headers.
+// newRequest builds an API request with the required headers. The
+// request carries the job's context: «Остановить» cancels it and the
+// transfer breaks mid-flight (see stop.go).
 func (c *Client) newRequest(method, url string) (*http.Request, error) {
-	req, err := http.NewRequest(method, url, nil)
+	req, err := http.NewRequestWithContext(c.reqCtx(), method, url, nil)
 	if err != nil {
 		return nil, err
 	}

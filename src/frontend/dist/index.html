@@ -5,12 +5,35 @@
 <title>YandexMusicDownloader</title>
 <style>
   body { font-family: Segoe UI, sans-serif; margin: 16px; background: #1e1e1e; color: #ddd; }
-  #row { display: flex; gap: 8px; }
-  #link { flex: 1; padding: 8px; font-size: 14px; }
+  /* Шапка: название слева, шестерёнка-настройки справа на одном уровне */
+  #head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  #head h2 { margin: 0; }
+  #settingsBtn { padding: 6px 10px; font-size: 18px; line-height: 1; background: #2d2d2d; color: #ddd; border: 1px solid #3c3c3c; border-radius: 4px; cursor: pointer; }
+  #settingsBtn:hover { background: #3a3a3a; }
+  #settingsBtn:disabled { cursor: wait; opacity: 0.6; }
+  /* Один grid на строку ввода + статусбар (1fr auto):
+     полоса идёт строго под полем ввода, процент — по центру под «Скачать». */
+  #row { display: grid; grid-template-columns: 1fr auto; gap: 14px 8px; margin-top: 14px; }
+  #link { padding: 8px; font-size: 14px; min-width: 0; }
   #dl { padding: 8px 20px; font-size: 14px; cursor: pointer; }
   #dl:disabled { cursor: wait; opacity: 0.6; }
+  /* На время скачивания та же кнопка становится «■ Остановить». */
+  #dl.stop { background: #b3261e; color: #fff; border: 1px solid #ff7b72; }
+  #dl.stop:hover:not(:disabled) { background: #c93a2e; }
+
+  #statusbar { display: contents; font-family: Consolas, monospace; font-size: 13px; }
+  #sbfillwrap { position: relative; height: 12px; background: #333; overflow: hidden; }
+  #sbfill { height: 100%; width: 0%; background: #79c0ff; transition: width .15s linear; }
+  #sbfill.done { background: #7ee787; }
+  #sbfill.err { background: #ff7b72; }
+  #sbfill.stopped { background: #e3b341; }
+  /* Счётчики — поверх правого края самой полосы, не занимают места в сетке. */
+  #sbmeta { position: absolute; inset: 0 6px; display: flex; align-items: center; justify-content: flex-end; gap: 10px; font-size: 11px; color: #eee; text-shadow: 0 1px 2px rgba(0,0,0,.9); }
+  #sbcount:empty, #sbbytes:empty { display: none; }
+  #sbpct { min-width: 40px; text-align: center; }
+
   #log { margin-top: 12px; white-space: pre-wrap; font-family: Consolas, monospace; font-size: 13px; }
-  .done { color: #7ee787; } .err { color: #ff7b72; } .info { color: #79c0ff; }
+  .done { color: #7ee787; } .err { color: #ff7b72; } .info { color: #79c0ff; } .stopped { color: #e3b341; }
   #prog { margin-top: 8px; font-family: Consolas, monospace; font-size: 13px; }
   .prow { margin: 2px 0; }
   .pbar { display: inline-block; width: 160px; height: 8px; background: #333; vertical-align: middle; margin: 0 8px; }
@@ -22,23 +45,114 @@
   .tbar { display: inline-block; width: 120px; height: 8px; background: #333; flex: none; }
   .tfill { display: block; height: 100%; background: #79c0ff; width: 0%; }
   .tstat { flex: none; min-width: 170px; }
+
+  /* Окно настроек: overlay-модалка поверх главного окна */
+  #settingsOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 10; }
+  #settingsOverlay.open { display: flex; align-items: center; justify-content: center; }
+  #settingsCard { background: #252526; border: 1px solid #3c3c3c; border-radius: 6px; padding: 18px 20px; width: 440px; max-width: 92vw; max-height: 90vh; overflow-y: auto; }
+  #settingsCard h3 { margin: 0 0 14px; font-size: 16px; }
+  .sfield { margin-bottom: 12px; }
+  .sfield label { display: block; font-size: 13px; color: #aaa; margin-bottom: 4px; }
+  .sline { display: flex; gap: 6px; }
+  .sline input[type=text], .sline input[type=password], .sline input[type=number] { flex: 1; min-width: 0; padding: 7px; font-size: 13px; background: #1e1e1e; color: #ddd; border: 1px solid #3c3c3c; border-radius: 3px; }
+  .sline input:disabled { opacity: 0.45; }
+  .sline button { padding: 7px 12px; font-size: 13px; cursor: pointer; }
+  .sline button:disabled { opacity: 0.45; cursor: default; }
+  .scheck { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 8px; }
+  .scheck input { width: 15px; height: 15px; }
+  /* Степпер воркеров: поле под двузначное число, кнопки −/+ справа от него */
+  .stepper { align-items: stretch; justify-content: flex-start; }
+  .stepper input { width: 64px; flex: none; text-align: center; font-size: 15px; }
+  .stepper button { min-width: 44px; font-size: 18px; line-height: 1; background: #333; color: #ddd; border: 1px solid #3c3c3c; border-radius: 3px; }
+  .stepper button:hover { background: #3d3d3d; }
+  .stepper input::-webkit-outer-spin-button,
+  .stepper input::-webkit-inner-spin-button { -webkit-appearance: none; display: none; margin: 0; }
+  .stepper input { -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield; }
+  #tokenCheck { font-size: 12px; min-height: 16px; margin-top: 4px; }
+  #settingsError { color: #ff7b72; font-size: 13px; min-height: 16px; margin-top: 6px; white-space: pre-wrap; }
+  .sbuttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  .sbuttons button { padding: 7px 16px; font-size: 14px; cursor: pointer; }
 </style>
 </head>
 <body>
-<h2>YandexMusicDownloader</h2>
+<div id="head">
+  <h2>YandexMusicDownloader</h2>
+  <button id="settingsBtn" title="Настройки">⚙</button>
+</div>
 <div id="row">
   <input id="link" placeholder="Вставь ссылку на трек или плейлист: music.yandex.ru/...">
   <button id="dl">Скачать</button>
+  <div id="statusbar">
+    <div id="sbfillwrap">
+      <div id="sbfill"></div>
+      <div id="sbmeta"><span id="sbcount"></span><span id="sbbytes"></span></div>
+    </div>
+    <span id="sbpct">0%</span>
+  </div>
 </div>
 <div id="tracks"></div>
 <div id="prog"></div>
 <div id="log"></div>
+
+<div id="settingsOverlay">
+  <div id="settingsCard">
+    <h3>Настройки</h3>
+    <div class="sfield">
+      <label for="sToken">Токен Яндекс</label>
+      <div class="sline">
+        <input type="password" id="sToken" placeholder="OAuth-токен">
+        <button id="sCheck">Проверить</button>
+      </div>
+      <div id="tokenCheck"></div>
+    </div>
+    <div class="sfield">
+      <label for="sLibrary">Папка коллекции (пусто — проверка дублей выключена)</label>
+      <div class="sline">
+        <input type="text" id="sLibrary">
+        <button id="sLibraryPick">Обзор</button>
+      </div>
+    </div>
+    <div class="scheck">
+      <input type="checkbox" id="sDiffOutput">
+      <label for="sDiffOutput">Папка загрузок отличается от папки коллекции</label>
+    </div>
+    <div class="sfield">
+      <label for="sOutput">Папка загрузок</label>
+      <div class="sline">
+        <input type="text" id="sOutput" disabled>
+        <button id="sOutputPick" disabled>Обзор</button>
+      </div>
+    </div>
+    <div class="sfield">
+      <label for="sWorkers">Параллельных скачиваний (1..10)</label>
+      <div class="sline stepper">
+        <input type="text" inputmode="numeric" id="sWorkers" value="3">
+        <button type="button" id="sMinus" title="Меньше">−</button>
+        <button type="button" id="sPlus" title="Больше">+</button>
+      </div>
+    </div>
+    <div class="scheck"><input type="checkbox" id="sConvert"><label for="sConvert">ALAC/M4A → FLAC (через ffmpeg.exe)</label></div>
+    <div class="scheck"><input type="checkbox" id="sEmbedCover"><label for="sEmbedCover">Встраивать обложку (текстовые теги пишутся)</label></div>
+    <div id="settingsError"></div>
+    <div class="sbuttons">
+      <button id="sCancel">Отмена</button>
+      <button id="sSave">Сохранить</button>
+    </div>
+  </div>
+</div>
+
 <script>
   const log = document.getElementById('log');
   const prog = document.getElementById('prog');
   const tracks = document.getElementById('tracks');
   const btn = document.getElementById('dl');
+  const settingsBtn = document.getElementById('settingsBtn');
   const input = document.getElementById('link');
+  const statusbar = document.getElementById('statusbar');
+  const sbfill = document.getElementById('sbfill');
+  const sbpct = document.getElementById('sbpct');
+  const sbcount = document.getElementById('sbcount');
+  const sbbytes = document.getElementById('sbbytes');
   const rows = {};
   const trows = {};
   function line(text, cls) {
@@ -48,6 +162,77 @@
     log.appendChild(div);
   }
   function fmtMB(b) { return (b / 1048576).toFixed(1); }
+
+  // --- Агрегированный статусбар ---
+  // job = {total, states: Map<id, {share, done, total}>}
+  // % = (завершённые + сумма долей активных) / total — знаменатель
+  // стабилен с момента job-start и не зависит от неизвестных размеров.
+  const job = { total: 0, states: new Map(), ended: false, result: null };
+  let sbDirty = false;
+  function jobReset(title, count) {
+    job.total = count;
+    job.states = new Map();
+    job.ended = false;
+    job.result = null;
+    statusbar.hidden = false;
+    sbfill.className = '';
+    // Строки предыдущей job'ы — прочь.
+    tracks.innerHTML = '';
+    for (const k in trows) delete trows[k];
+    prog.innerHTML = '';
+    for (const k in rows) delete rows[k];
+    if (title) {
+      const h = document.createElement('div');
+      h.className = 'thead';
+      h.textContent = title;
+      tracks.appendChild(h);
+    }
+    scheduleSB();
+  }
+  function setTrackState(id, share, done, total) {
+    let s = job.states.get(id);
+    if (!s) { s = { share: 0, done: 0, total: 0 }; job.states.set(id, s); }
+    if (share !== null) s.share = share;
+    if (done !== null) s.done = done;
+    if (total !== null) s.total = total;
+    scheduleSB();
+  }
+  function scheduleSB() {
+    if (sbDirty) return;
+    sbDirty = true;
+    requestAnimationFrame(() => { sbDirty = false; drawSB(); });
+  }
+  function drawSB() {
+    if (job.total <= 0) return;
+    let done = 0, sum = 0, bytesDone = 0, bytesTotal = 0, anyTotal = false;
+    for (const s of job.states.values()) {
+      sum += s.share;
+      if (s.share >= 1) done++;
+      if (s.total > 0) { bytesDone += s.done; bytesTotal += s.total; anyTotal = true; }
+    }
+    // Доля активных треков без событий прогресса и вовсе неизвестна: 0.
+    const pct = Math.min(100, Math.round((sum / job.total) * 100));
+    sbfill.style.width = pct + '%';
+    sbpct.textContent = pct + '%';
+    sbcount.textContent = done + '/' + job.total + ' треков';
+    sbbytes.textContent = anyTotal ? fmtMB(bytesDone) + '/' + fmtMB(bytesTotal) + ' МБ' : '';
+    if (job.ended && job.result) {
+      // Остановленная job'а остаётся на фактическом % (янтарная),
+      // до 100% её не дотягиваем.
+      if (job.result.stopped) {
+        sbfill.className = 'stopped';
+        sbcount.textContent = done + '/' + job.total + ' треков, остановлено';
+      } else if (job.result.failed > 0) {
+        sbfill.className = 'err';
+        sbcount.textContent = done + '/' + job.total + ' треков, ошибок: ' + job.result.failed;
+      } else {
+        sbfill.className = 'done';
+      }
+    } else {
+      sbfill.className = '';
+    }
+  }
+
   function trackBar(id, pct, done, total) {
     const r = trows[id];
     if (!r) return false;
@@ -60,6 +245,9 @@
     return true;
   }
   function progress(id, label, pct, done, total) {
+    // Агрегат считаем всегда, даже когда строка ещё не построена.
+    const pctNum = Number(pct);
+    setTrackState(id, pctNum >= 0 ? pctNum / 100 : 0, Number(done), Number(total));
     if (trackBar(id, pct, done, total)) return;
     let r = rows[id];
     if (!r) {
@@ -80,7 +268,6 @@
       prog.appendChild(r);
       rows[id] = r;
     }
-    const pctNum = Number(pct);
     if (pctNum === 100) {
       r.remove();
       delete rows[id];
@@ -102,18 +289,6 @@
         delete rows[k];
       }
     }
-  }
-  function clearRows() {
-    prog.innerHTML = '';
-    for (const k in rows) delete rows[k];
-  }
-  function playlistStart(title, count) {
-    tracks.innerHTML = '';
-    for (const k in trows) delete trows[k];
-    const h = document.createElement('div');
-    h.className = 'thead';
-    h.textContent = '[playlist] ' + title + ' (' + count + ' треков)';
-    tracks.appendChild(h);
   }
   function trackList(items) {
     items.forEach((pair) => {
@@ -139,6 +314,8 @@
       r.appendChild(stat);
       tracks.appendChild(r);
       trows[id] = { row: r, stat: stat, bar: bar, fill: fill };
+      // Ещё не терминированный трек входит в знаменатель сразу.
+      if (!job.states.has(id)) setTrackState(id, 0, null, null);
     });
   }
   function trackStatus(id, status, kind) {
@@ -150,33 +327,209 @@
     }
     t.stat.textContent = status;
     t.stat.className = 'tstat' + (kind ? ' ' + kind : '');
+    // Терминальные статусы закрывают долю трека: [done]/[skip]/[error].
+    // [stopped] не закрывает: трек не докачан, его доля остаётся
+    // частичной (или нулевой) и % статусбара не раздувается.
+    if (status.startsWith('[done]') || status.startsWith('[skip]') || status.startsWith('[error]')) {
+      setTrackState(id, 1, null, null);
+    } else if (status.startsWith('[downloading]')) {
+      // доля остаётся прежней (из progress), но трек уже «в работе».
+      if (!job.states.has(id)) setTrackState(id, 0, null, null);
+    }
   }
-  window.runtime.EventsOn('playlist-start', (title, count) => playlistStart(title, count));
+
+  window.runtime.EventsOn('job-start', (title, count) => jobReset(title, count));
+  window.runtime.EventsOn('job-end', (ok, skip, error, stopped) => {
+    job.ended = true;
+    job.result = { ok, skip, failed: error, stopped: !!stopped };
+    // Всё терминировано: дотягиваем доли, чтобы % сошёлся к 100.
+    // Остановка — исключение: незаконченное остаётся незаконченным.
+    if (!stopped) {
+      for (const s of job.states.values()) s.share = 1;
+    }
+    scheduleSB();
+  });
   window.runtime.EventsOn('tracks', (items) => trackList(items));
   window.runtime.EventsOn('track-status', (id, status, kind) => trackStatus(id, status, kind));
   window.runtime.EventsOn('log', (text, kind) => {
     line(text, kind);
-    if (text.startsWith('[finished]')) clearRows();
-    else if (text.startsWith('[done] ') || text.startsWith('[skip] ') || text.startsWith('[error] ')) hideRowsByLabel(text);
+    if (text.startsWith('[done] ') || text.startsWith('[skip] ') ||
+        text.startsWith('[error] ') || text.startsWith('[stopped] ')) hideRowsByLabel(text);
   });
   window.runtime.EventsOn('progress', (id, label, pct, done, total) => progress(id, label, pct, done, total));
+
+  // --- Кнопка скачивания / остановки ---
+  // Пока идёт job'а, кнопка не блокируется, а меняет назначение:
+  // «Скачать» → красная «■ Остановить». Один флаг busy, повторных
+  // кликов нет: во время остановки кнопка переходит в «Останавливаю…».
+  let busy = false;
+  function setIdleButton() {
+    busy = false;
+    btn.classList.remove('stop');
+    btn.textContent = 'Скачать';
+    btn.disabled = false;
+    settingsBtn.disabled = false;
+  }
   btn.onclick = async () => {
+    if (busy) {
+      // Режим остановки: не даём запросить стоп дважды.
+      btn.disabled = true;
+      btn.textContent = 'Останавливаю…';
+      try {
+        await window.go.ui.App.Stop();
+      } catch (e) {
+        line('[error] ' + e, 'err');
+        btn.disabled = false;
+        btn.textContent = '■ Остановить';
+      }
+      return;
+    }
     const link = input.value.trim();
     if (!link) return;
     input.value = '';
     input.focus();
-    prog.innerHTML = '';
-    for (const k in rows) delete rows[k];
-    tracks.innerHTML = '';
-    for (const k in trows) delete trows[k];
-    btn.disabled = true;
+    busy = true;
+    btn.classList.add('stop');
+    btn.textContent = '■ Остановить';
+    settingsBtn.disabled = true;
     try {
       const res = await window.go.ui.App.Download(link);
-      if (res) line(res, res.startsWith('[done]') ? 'done' : (res.startsWith('[error]') ? 'err' : 'info'));
+      if (res) {
+        line(res, res.startsWith('[done]') ? 'done'
+          : (res.startsWith('[error]') ? 'err'
+            : (res.startsWith('[stopped]') ? 'stopped' : 'info')));
+      }
     } catch (e) {
       line('[error] ' + e, 'err');
     }
-    btn.disabled = false;
+    setIdleButton();
+  };
+
+  // --- Окно настроек ---
+  const overlay = document.getElementById('settingsOverlay');
+  const sToken = document.getElementById('sToken');
+  const sOutput = document.getElementById('sOutput');
+  const sOutputPick = document.getElementById('sOutputPick');
+  const sLibrary = document.getElementById('sLibrary');
+  const sDiffOutput = document.getElementById('sDiffOutput');
+  const sWorkers = document.getElementById('sWorkers');
+  const sMinus = document.getElementById('sMinus');
+  const sPlus = document.getElementById('sPlus');
+  const sConvert = document.getElementById('sConvert');
+  const sEmbedCover = document.getElementById('sEmbedCover');
+  const tokenCheck = document.getElementById('tokenCheck');
+  const settingsError = document.getElementById('settingsError');
+
+  // Папка загрузок по умолчанию совпадает с папкой коллекции: поле и
+  // «Обзор» активны только когда отмечено «папка загрузок отличается».
+  function syncOutputField() {
+    const diff = sDiffOutput.checked;
+    sOutput.disabled = !diff;
+    sOutputPick.disabled = !diff;
+    if (!diff) sOutput.value = sLibrary.value;
+  }
+  sDiffOutput.addEventListener('change', syncOutputField);
+  sLibrary.addEventListener('input', syncOutputField);
+
+  // Степпер 1..10 вместо крошечных стрелок number-input.
+  function workersStep(delta) {
+    let v = Number(sWorkers.value);
+    if (!Number.isFinite(v)) v = 1;
+    v = Math.min(10, Math.max(1, Math.round(v) + delta));
+    sWorkers.value = v;
+  }
+  sMinus.onclick = () => workersStep(-1);
+  sPlus.onclick = () => workersStep(1);
+  sWorkers.addEventListener('blur', () => {
+    let v = Math.round(Number(sWorkers.value));
+    if (!Number.isFinite(v)) v = 1;
+    sWorkers.value = Math.min(10, Math.max(1, v));
+  });
+
+  function closeSettings() {
+    overlay.classList.remove('open');
+    tokenCheck.textContent = '';
+    settingsError.textContent = '';
+  }
+  settingsBtn.onclick = async () => {
+    if (busy) return; // идёт скачивание
+    settingsError.textContent = '';
+    try {
+      const s = await window.go.ui.App.GetSettings();
+      sToken.value = s.Token || '';
+      sLibrary.value = s.LibraryDir || '';
+      // Раздельная папка загрузок — только если она реально отличается.
+      sDiffOutput.checked = (s.OutputDir || '') !== (s.LibraryDir || '');
+      syncOutputField();
+      sOutput.value = s.OutputDir || '';
+      sWorkers.value = s.Workers;
+      sConvert.checked = !!s.ConvertM4A;
+      sEmbedCover.checked = !!s.EmbedCover;
+      tokenCheck.textContent = '';
+      overlay.classList.add('open');
+    } catch (e) {
+      line('[error] ' + e, 'err');
+    }
+  };
+  document.getElementById('sCancel').onclick = closeSettings;
+  overlay.onclick = (e) => { if (e.target === overlay) closeSettings(); };
+
+  document.getElementById('sCheck').onclick = async () => {
+    tokenCheck.textContent = 'проверяю...';
+    tokenCheck.style.color = '#aaa';
+    try {
+      const res = await window.go.ui.App.CheckToken(sToken.value);
+      tokenCheck.style.color = '#7ee787';
+      tokenCheck.textContent = res;
+    } catch (e) {
+      tokenCheck.style.color = '#ff7b72';
+      tokenCheck.textContent = String(e);
+    }
+  };
+
+  document.getElementById('sOutputPick').onclick = async () => {
+    try {
+      const p = await window.go.ui.App.PickFolder();
+      if (p) sOutput.value = p;
+    } catch (e) { settingsError.textContent = String(e); }
+  };
+  document.getElementById('sLibraryPick').onclick = async () => {
+    try {
+      const p = await window.go.ui.App.PickFolder();
+      if (p) { sLibrary.value = p; syncOutputField(); }
+    } catch (e) { settingsError.textContent = String(e); }
+  };
+
+  document.getElementById('sSave').onclick = async () => {
+    settingsError.textContent = '';
+    const workers = Number(sWorkers.value);
+    if (!Number.isInteger(workers) || workers < 1 || workers > 10) {
+      settingsError.textContent = 'Число параллельных скачиваний: целое от 1 до 10';
+      return;
+    }
+    // Без чекбокса «отличается» качаем в папку коллекции.
+    const library = sLibrary.value;
+    const output = sDiffOutput.checked ? sOutput.value : library;
+    if (!output.trim()) {
+      settingsError.textContent = sDiffOutput.checked
+        ? 'Папка загрузок не может быть пустой'
+        : 'Папка коллекции пуста — укажи её или включи «папка загрузок отличается»';
+      return;
+    }
+    try {
+      await window.go.ui.App.SaveSettings({
+        Token: sToken.value,
+        OutputDir: output,
+        LibraryDir: library,
+        Workers: workers,
+        ConvertM4A: sConvert.checked,
+        EmbedCover: sEmbedCover.checked,
+      });
+      closeSettings();
+      line('[done] настройки сохранены', 'done');
+    } catch (e) {
+      settingsError.textContent = String(e);
+    }
   };
 </script>
 </body>

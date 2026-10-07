@@ -31,10 +31,13 @@ const (
 )
 
 // Summary counts batch outcomes for the final [finished] line.
+// Stopped tracks (user pressed «Остановить») are counted apart from
+// failures: they were neither completed nor broken.
 type Summary struct {
 	OK      int
 	Skipped int
 	Failed  int
+	Stopped int
 }
 
 // DownloadPlaylist downloads resolved tracks with a fixed pool of
@@ -92,8 +95,24 @@ func (c *Client) DownloadPlaylist(tracks []*Track, outputDir string, emit func(E
 		wg.Add(1)
 		go func(t *Track) {
 			defer wg.Done()
+			// A stopped job must not start queued tracks: they never
+			// ran, so report them as stopped rather than failed.
+			if c.Stopped() {
+				mu.Lock()
+				sum.Stopped++
+				mu.Unlock()
+				safeEmit(Event{Kind: KindStopped, Label: t.Label(), TrackID: t.ID})
+				return
+			}
 			sem <- struct{}{}
 			defer func() { <-sem }()
+			if c.Stopped() {
+				mu.Lock()
+				sum.Stopped++
+				mu.Unlock()
+				safeEmit(Event{Kind: KindStopped, Label: t.Label(), TrackID: t.ID})
+				return
+			}
 			_, err := dl(t, outputDir, safeEmit, safeProgress)
 			mu.Lock()
 			defer mu.Unlock()
@@ -102,6 +121,8 @@ func (c *Client) DownloadPlaylist(tracks []*Track, outputDir string, emit func(E
 				sum.OK++
 			case errors.Is(err, ErrAlreadyExists):
 				sum.Skipped++
+			case errors.Is(err, ErrStopped):
+				sum.Stopped++
 			default:
 				sum.Failed++
 			}

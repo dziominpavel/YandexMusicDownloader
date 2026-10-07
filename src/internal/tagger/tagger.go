@@ -46,12 +46,12 @@ func Write(path string, m Meta) error {
 	}
 }
 
-// Adapter builds a downloader.TagFunc: cover fetch (unless skipCover)
+// Adapter builds a downloader.TagFunc: cover fetch (when embedCover)
 // + meta mapping + Write. Cover failures never fail the track.
-func Adapter(skipCover bool) downloader.TagFunc {
+func Adapter(embedCover bool) downloader.TagFunc {
 	return func(path string, track *downloader.Track) error {
 		m := MetaForTrack(track)
-		if !skipCover {
+		if embedCover {
 			if url := CoverURL(track.CoverURI, DefaultCoverSize); url != "" {
 				if data, mime, err := FetchCover(url); err == nil {
 					m.Cover, m.CoverMIME = data, mime

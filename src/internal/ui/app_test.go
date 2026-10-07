@@ -38,6 +38,7 @@ func TestFormatEvent(t *testing.T) {
 		{downloader.Event{Kind: downloader.KindSkipped, Label: "A — T", Detail: downloader.SkipDuplicate}, "[skip] A — T (duplicate)", "info"},
 		{downloader.Event{Kind: downloader.KindSkipped, Label: "A — T", Detail: downloader.SkipUnavailable}, "[skip] A — T (unavailable)", "info"},
 		{downloader.Event{Kind: downloader.KindFailed, Label: "A — T", Detail: "boom"}, "[error] A — T: boom", "err"},
+		{downloader.Event{Kind: downloader.KindStopped, Label: "A — T"}, "[stopped] A — T", "stopped"},
 	}
 	for _, c := range cases {
 		text, kind := formatEvent(c.in)
@@ -61,6 +62,7 @@ func TestFormatTrackStatus(t *testing.T) {
 		{downloader.Event{Kind: downloader.KindSkipped, Detail: downloader.SkipDuplicate}, "[skip] (duplicate)", "info"},
 		{downloader.Event{Kind: downloader.KindSkipped, Detail: downloader.SkipUnavailable}, "[skip] (unavailable)", "info"},
 		{downloader.Event{Kind: downloader.KindFailed, Detail: "boom"}, "[error] boom", "err"},
+		{downloader.Event{Kind: downloader.KindStopped}, "[stopped]", "stopped"},
 	}
 	for _, c := range cases {
 		text, kind := formatTrackStatus(c.in)
@@ -134,6 +136,29 @@ func TestDuplicateMessageMentionsFormat(t *testing.T) {
 	a.checkDuplicate(tr)
 	if !strings.Contains(msg, "в формате mp3") || !strings.Contains(msg, "двух форматах") {
 		t.Fatalf("format mismatch must be called out, got:\n%s", msg)
+	}
+}
+
+// Нативный диалог отдаёт разные надписи в зависимости от платформы:
+// Windows игнорирует наши Buttons и отвечает Yes/No, macOS — возвращает
+// наши метки. Регрессия: res == "Скачать" давал false на Windows, и
+// любой ответ превращался в "отменено пользователем".
+func TestConfirmAnswerAcrossPlatforms(t *testing.T) {
+	yes := []string{"Yes", "yes", " Скачать ", "СКАЧАТЬ", "Да", "OK"}
+	no := []string{"No", "NO", "Отмена", "отмена", "Cancel", "cancel", "", "   ", "нет"}
+	for _, res := range yes {
+		if !confirmAnswer(res) {
+			t.Errorf("%q must confirm the download", res)
+		}
+	}
+	for _, res := range no {
+		if confirmAnswer(res) {
+			t.Errorf("%q must decline the download", res)
+		}
+	}
+	// Неизвестный ответ не должен блокировать скачивание.
+	if !confirmAnswer("Error") {
+		t.Error("unknown answer must not block the download")
 	}
 }
 

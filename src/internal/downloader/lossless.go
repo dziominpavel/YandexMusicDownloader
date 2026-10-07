@@ -195,20 +195,29 @@ func (c *Client) DownloadWithProgress(trackID, outputDir string, emit func(Event
 
 // DownloadTrack fetches an already-resolved track in the best quality.
 // The playlist batch uses it to avoid an extra metadata request per track.
+// A stopped job returns ErrStopped and emits KindStopped instead of an error.
 func (c *Client) DownloadTrack(track *Track, outputDir string, emit func(Event), onProgress ProgressFunc) (res Result, err error) {
 	label := track.Label()
 	tid := track.ID
+	if c.Stopped() {
+		emitEvent(emit, Event{Kind: KindStopped, Label: label, TrackID: tid})
+		return Result{}, ErrStopped
+	}
 	emitEvent(emit, Event{Kind: KindDownloading, Label: label, TrackID: tid})
 	defer func() {
-		if err == nil {
+		switch {
+		case err == nil:
 			res.Label = label
 			if res.Path != "" && c.OnPublished != nil {
 				c.OnPublished(res.Path)
 			}
 			emitEvent(emit, Event{Kind: KindDone, Label: label, TrackID: tid, Format: res.Format, Fallback: res.Fallback, Converted: res.Converted})
-		} else if errors.Is(err, ErrAlreadyExists) {
+		case errors.Is(err, ErrAlreadyExists):
 			emitEvent(emit, Event{Kind: KindSkipped, Label: label, TrackID: tid, Detail: res.Path})
-		} else {
+		case errors.Is(err, ErrStopped) || c.Stopped():
+			err = ErrStopped
+			emitEvent(emit, Event{Kind: KindStopped, Label: label, TrackID: tid})
+		default:
 			emitEvent(emit, Event{Kind: KindFailed, Label: label, TrackID: tid, Detail: err.Error()})
 		}
 	}()
@@ -218,6 +227,9 @@ func (c *Client) DownloadTrack(track *Track, outputDir string, emit func(Event),
 			return res, lerr
 		}
 		// Any other lossless failure falls back to MP3 below.
+	}
+	if c.Stopped() {
+		return Result{}, ErrStopped
 	}
 
 	path, err := c.downloadMP3Track(track, outputDir, nil, onProgress) // events emitted by outer defer
@@ -274,8 +286,14 @@ func (c *Client) downloadLossless(track *Track, outputDir string, uid int64, onP
 
 	var lastErr error
 	for _, rawURL := range info.URLs {
+		if c.Stopped() {
+			return Result{}, ErrStopped
+		}
 		tmp, err := c.streamLosslessTemp(rawURL, outputDir, stream, streamFormat, losslessExt(info.Codec), track.ID, track.Label(), onProgress)
 		if err != nil {
+			if c.Stopped() {
+				return Result{}, ErrStopped
+			}
 			lastErr = err
 			continue
 		}
