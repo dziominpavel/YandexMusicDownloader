@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"yamdl/internal/config"
 	"yamdl/internal/downloader"
 	"yamdl/internal/library"
 )
@@ -77,6 +78,27 @@ func TestDownloadWithoutToken(t *testing.T) {
 	got := a.Download("https://music.yandex.ru/album/1/track/2")
 	if !strings.HasPrefix(got, "[error]") {
 		t.Fatalf("want [error], got %q", got)
+	}
+	for _, want := range []string{"Настройки", "Как получить токен"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("error must point to %q, got %q", want, got)
+		}
+	}
+	if strings.Contains(got, ".env") {
+		t.Errorf("error must not send the user to .env, got %q", got)
+	}
+}
+
+func TestReadyWithoutTokenMentionsHelp(t *testing.T) {
+	a := &App{envPath: filepath.Join(t.TempDir(), ".env")}
+	a.apply(config.Config{OutputDir: t.TempDir()})
+	for _, want := range []string{"30-секундное превью", "Настройки", "Как получить токен"} {
+		if !strings.Contains(a.ready, want) {
+			t.Errorf("startup status must contain %q, got %q", want, a.ready)
+		}
+	}
+	if strings.Contains(a.ready, ".env") {
+		t.Errorf("startup status must not send the user to .env, got %q", a.ready)
 	}
 }
 

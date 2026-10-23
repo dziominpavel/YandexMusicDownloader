@@ -69,6 +69,24 @@
   .stepper input::-webkit-inner-spin-button { -webkit-appearance: none; display: none; margin: 0; }
   .stepper input { -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield; }
   #tokenCheck { font-size: 12px; min-height: 16px; margin-top: 4px; }
+  #tokenHelpRow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 3px; font-size: 12px; }
+  #tokenHelpLink { padding: 0; background: none; border: 0; color: #79c0ff; font: inherit; text-decoration: underline; cursor: pointer; }
+  #tokenHelpLink:hover { color: #a5d6ff; }
+  #tokenHelpLink:focus-visible { outline: 1px solid #79c0ff; outline-offset: 2px; }
+  #tokenHint { color: #e3b341; }
+  #tokenHint[hidden] { display: none; }
+  /* Справка по токену — второй overlay поверх настроек */
+  #tokenHelpOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 20; }
+  #tokenHelpOverlay.open { display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; }
+  #tokenHelpCard { background: #252526; border: 1px solid #3c3c3c; border-radius: 6px; padding: 18px 20px; width: 520px; max-width: 92vw; max-height: 90vh; overflow-y: auto; box-sizing: border-box; }
+  #tokenHelpCard h3 { margin: 0 0 10px; font-size: 16px; }
+  #tokenHelpCard p { margin: 8px 0; font-size: 13px; line-height: 1.45; }
+  #tokenHelpCard ol { margin: 8px 0 8px 20px; padding: 0; font-size: 13px; line-height: 1.45; }
+  #tokenHelpCard li { margin: 6px 0; }
+  #tokenHelpCard code { font-family: Consolas, monospace; background: #1e1e1e; padding: 1px 4px; border-radius: 3px; }
+  .token-help-note { color: #aaa; font-size: 12px !important; }
+  .token-help-warn { color: #e3b341; border-left: 3px solid #e3b341; padding-left: 10px; }
+  #tokenHelpCard .sbuttons { justify-content: space-between; }
   #settingsError { color: #ff7b72; font-size: 13px; min-height: 16px; margin-top: 6px; white-space: pre-wrap; }
   .sbuttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
   .sbuttons button { padding: 7px 16px; font-size: 14px; cursor: pointer; }
@@ -104,6 +122,10 @@
         <button id="sCheck">Проверить</button>
       </div>
       <div id="tokenCheck"></div>
+      <div id="tokenHelpRow">
+        <button type="button" id="tokenHelpLink">Как получить токен?</button>
+        <span id="tokenHint" hidden>Без токена доступно только 30-секундное превью</span>
+      </div>
     </div>
     <div class="sfield">
       <label for="sLibrary">Папка коллекции (пусто — проверка дублей выключена)</label>
@@ -137,6 +159,25 @@
     <div class="sbuttons">
       <button id="sCancel">Отмена</button>
       <button id="sSave">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<div id="tokenHelpOverlay" aria-hidden="true">
+  <div id="tokenHelpCard" role="dialog" aria-modal="true" aria-labelledby="tokenHelpTitle" tabindex="-1">
+    <h3 id="tokenHelpTitle">Как получить токен</h3>
+    <p>Токен — это ключ доступа к вашему аккаунту Яндекса. С ним приложение скачивает полные треки, без него доступны только 30-секундные превью.</p>
+    <ol>
+      <li>Нажмите «Открыть страницу OAuth» — откроется официальный сайт Яндекса.</li>
+      <li>Войдите в аккаунт и разрешите доступ приложению.</li>
+      <li>После возврата на music.yandex.ru скопируйте из адресной строки только значение после <code>access_token=</code> до следующего <code>&amp;</code>. Без <code>access_token=</code>, пробелов и кавычек.</li>
+      <li>Вставьте токен в поле «Токен Яндекс», нажмите «Проверить», затем «Сохранить».</li>
+    </ol>
+    <p class="token-help-note">Если страница мигнула и адресная строка очистилась: откройте OAuth-ссылку в окне инкогнито или нажмите <code>Ctrl+L</code>, затем сразу <code>Ctrl+C</code>.</p>
+    <p class="token-help-warn">Токен действует как пароль. Никому его не передавайте, не публикуйте и не показывайте скриншоты адресной строки с токеном.</p>
+    <div class="sbuttons">
+      <button type="button" id="tokenHelpOAuth">Открыть страницу OAuth</button>
+      <button type="button" id="tokenHelpClose">Понятно</button>
     </div>
   </div>
 </div>
@@ -419,6 +460,12 @@
   const sEmbedCover = document.getElementById('sEmbedCover');
   const tokenCheck = document.getElementById('tokenCheck');
   const settingsError = document.getElementById('settingsError');
+  const tokenHelpLink = document.getElementById('tokenHelpLink');
+  const tokenHint = document.getElementById('tokenHint');
+  const tokenHelpOverlay = document.getElementById('tokenHelpOverlay');
+  const tokenHelpClose = document.getElementById('tokenHelpClose');
+  const tokenHelpOAuth = document.getElementById('tokenHelpOAuth');
+  const OAUTH_URL = 'https://oauth.yandex.ru/authorize?response_type=token&client_id=23cabbbdc6cd418abb4b39c32c41195d';
 
   // Папка загрузок по умолчанию совпадает с папкой коллекции: поле и
   // «Обзор» активны только когда отмечено «папка загрузок отличается».
@@ -446,9 +493,42 @@
     sWorkers.value = Math.min(10, Math.max(1, v));
   });
 
+  // Подсказка про превью видна только при пустом токене.
+  function syncTokenHint() {
+    tokenHint.hidden = sToken.value.trim() !== '';
+  }
+  sToken.addEventListener('input', syncTokenHint);
+
+  function onTokenHelpKey(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeTokenHelp();
+    }
+  }
+  function openTokenHelp() {
+    if (tokenHelpOverlay.classList.contains('open')) return;
+    tokenHelpOverlay.classList.add('open');
+    tokenHelpOverlay.setAttribute('aria-hidden', 'false');
+    document.addEventListener('keydown', onTokenHelpKey);
+    tokenHelpClose.focus();
+  }
+  function closeTokenHelp(focusLink) {
+    const wasOpen = tokenHelpOverlay.classList.contains('open');
+    tokenHelpOverlay.classList.remove('open');
+    tokenHelpOverlay.setAttribute('aria-hidden', 'true');
+    document.removeEventListener('keydown', onTokenHelpKey);
+    if (wasOpen && focusLink !== false) tokenHelpLink.focus();
+  }
+  tokenHelpLink.onclick = openTokenHelp;
+  tokenHelpClose.onclick = () => closeTokenHelp();
+  tokenHelpOverlay.onclick = (e) => { if (e.target === tokenHelpOverlay) closeTokenHelp(); };
+  tokenHelpOAuth.onclick = () => window.runtime.BrowserOpenURL(OAUTH_URL);
+
   function closeSettings() {
+    closeTokenHelp(false);
     overlay.classList.remove('open');
     tokenCheck.textContent = '';
+    tokenHint.hidden = true;
     settingsError.textContent = '';
   }
   settingsBtn.onclick = async () => {
@@ -466,6 +546,7 @@
       sConvert.checked = !!s.ConvertM4A;
       sEmbedCover.checked = !!s.EmbedCover;
       tokenCheck.textContent = '';
+      syncTokenHint();
       overlay.classList.add('open');
     } catch (e) {
       line('[error] ' + e, 'err');

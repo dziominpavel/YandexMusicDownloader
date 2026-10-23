@@ -98,7 +98,7 @@ func (a *App) apply(cfg config.Config) {
 	a.setupLibrary(a.envPath, cfg.LibraryDir)
 	if cfg.Token == "" {
 		a.client = nil
-		a.ready = "токен пуст — доступно только 30-секундное превью"
+		a.ready = "токен пуст — доступно только 30-секундное превью; открой «⚙ Настройки → Как получить токен?»"
 		return
 	}
 	who, err := config.Validate(cfg.Token)
@@ -157,8 +157,8 @@ func (a *App) Startup(ctx context.Context) {
 // Default window size for a first launch, i.e. when .env carries no
 // saved WINDOW_WIDTH/WINDOW_HEIGHT (see spec desktop-app).
 const (
-	DefaultWindowWidth  = 864
-	DefaultWindowHeight = 576
+	DefaultWindowWidth  = 950
+	DefaultWindowHeight = 634
 )
 
 // InitialSize returns the size the window must open with: the last
@@ -375,7 +375,7 @@ func (a *App) filterDuplicates(tracks []*downloader.Track) []*downloader.Track {
 // While a download runs, settings are locked (see SaveSettings).
 func (a *App) Download(link string) string {
 	if a.client == nil {
-		return "[error] нет токена: заполни YANDEX_TOKEN в .env рядом с app.exe"
+		return "[error] нет токена: доступно только 30-секундное превью. Открой «⚙ Настройки → Как получить токен?»"
 	}
 	a.setBusy(true)
 	defer a.setBusy(false)
