@@ -140,23 +140,67 @@ func (c *Client) newRequest(method, url string) (*http.Request, error) {
 	return req, nil
 }
 
+func isRetryableNetworkErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr interface{ Timeout() bool }
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	// http transport errors often wrapped
+	s := err.Error()
+	if strings.Contains(s, "timeout") || strings.Contains(s, "connection refused") || strings.Contains(s, "broken pipe") || strings.Contains(s, "connection reset") || strings.Contains(s, "i/o timeout") {
+		return true
+	}
+	return false
+}
+
 func (c *Client) get(url string, out any) error {
-	req, err := c.newRequest(http.MethodGet, url)
-	if err != nil {
-		return err
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		req, err := c.newRequest(http.MethodGet, url)
+		if err != nil {
+			return err
+		}
+		resp, err := c.http.Do(req)
+		if err != nil {
+			lastErr = err
+			if isRetryableNetworkErr(err) && attempt < 2 {
+				time.Sleep(time.Duration(attempt+1) * 150 * time.Millisecond)
+				continue
+			}
+			return fmt.Errorf("downloader: GET %s: %w", url, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			// Don't retry 4xx business errors
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				return fmt.Errorf("downloader: GET %s: http %d", url, resp.StatusCode)
+			}
+			lastErr = fmt.Errorf("downloader: GET %s: http %d", url, resp.StatusCode)
+			if attempt < 2 {
+				time.Sleep(time.Duration(attempt+1) * 150 * time.Millisecond)
+				continue
+			}
+			return lastErr
+		}
+		err = json.NewDecoder(resp.Body).Decode(out)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			if isRetryableNetworkErr(err) && attempt < 2 {
+				time.Sleep(time.Duration(attempt+1) * 150 * time.Millisecond)
+				continue
+			}
+			return fmt.Errorf("downloader: decode %s: %w", url, err)
+		}
+		return nil
 	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("downloader: GET %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("downloader: GET %s: http %d", url, resp.StatusCode)
-	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("downloader: decode %s: %w", url, err)
-	}
-	return nil
+	return lastErr
 }
 
 type trackResult struct {

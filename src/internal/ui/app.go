@@ -367,16 +367,58 @@ func (a *App) filterDuplicates(tracks []*downloader.Track) []*downloader.Track {
 	return out
 }
 
-// Download fetches a track or playlist link. It blocks; the frontend
-// awaits it while live log and progress events arrive. Terminal lifecycle
-// events are already shown in the log, so Download returns "" when the
-// outcome was displayed and a message only when there is nothing in the
-// log yet (no token, bad link, failure before any event).
-// While a download runs, settings are locked (see SaveSettings).
+func splitLinks(input string) []string {
+	// split by whitespace and comma/semicolon
+	var out []string
+	var cur strings.Builder
+	for _, r := range input {
+		switch r {
+		case '\n', '\r', '\t', ' ', ',', ';':
+			s := strings.TrimSpace(cur.String())
+			cur.Reset()
+			if s != "" {
+				out = append(out, s)
+			}
+			continue
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if s := strings.TrimSpace(cur.String()); s != "" {
+		out = append(out, s)
+	}
+	return out
+}
+
+// Download fetches track/album/playlist links. It blocks; the frontend
+// awaits it while live log and progress events arrive. Supports multiple
+// links separated by whitespace/comma/semicolon.
 func (a *App) Download(link string) string {
 	if a.client == nil {
 		return "[error] нет токена: доступно только 30-секундное превью. Открой «⚙ Настройки → Как получить токен?»"
 	}
+	links := splitLinks(link)
+	if len(links) == 0 {
+		return "[error] пустая ссылка"
+	}
+	if len(links) == 1 {
+		return a.downloadOneLink(links[0])
+	}
+	var first string
+	for i, l := range links {
+		if i == 0 {
+			first = a.downloadOneLink(l)
+			continue
+		}
+		res := a.downloadOneLink(l)
+		if res != "" && first == "" {
+			first = res
+		}
+	}
+	return first
+}
+
+func (a *App) downloadOneLink(link string) string {
 	a.setBusy(true)
 	defer a.setBusy(false)
 	// Новая job'а: сбрасываем остановку предыдущей, чтобы «Остановить»
@@ -390,6 +432,9 @@ func (a *App) Download(link string) string {
 	if ref.Kind == resolver.KindPlaylist {
 		return a.downloadPlaylist(ref.PlaylistUUID)
 	}
+	if ref.Kind == resolver.KindAlbum {
+		return a.downloadAlbum(ref.AlbumID)
+	}
 	track, err := a.client.ResolveTrack(ref.TrackID)
 	if err != nil {
 		if a.stopRequested() {
@@ -402,6 +447,38 @@ func (a *App) Download(link string) string {
 		return ""
 	}
 	return a.downloadSingle(track)
+}
+
+func (a *App) downloadAlbum(id string) string {
+	alb, err := a.client.Album(id)
+	if err != nil {
+		if a.stopRequested() {
+			return "[stopped] прервано пользователем"
+		}
+		return fmt.Sprintf("[error] альбом недоступен: %v", err)
+	}
+	if len(alb.Tracks) == 0 {
+		return "[error] альбом пуст"
+	}
+	tracks := a.filterDuplicates(alb.Tracks)
+	if len(tracks) == 0 {
+		return "[skip] все треки отклонены как возможные дубли"
+	}
+	title := alb.Title
+	if title == "" {
+		title = "Альбом"
+	}
+	a.jobStart(title, len(tracks))
+	a.trackRows(tracks)
+	sum := a.runBatch(tracks)
+	stopped := sum.Stopped > 0 || a.stopRequested()
+	if stopped {
+		a.log(fmt.Sprintf("[stopped] прервано: %d ok, %d skip, %d error", sum.OK, sum.Skipped, sum.Failed), "stopped")
+	} else {
+		a.log(fmt.Sprintf("[finished] %d ok, %d skip, %d error", sum.OK, sum.Skipped, sum.Failed), "info")
+	}
+	a.jobEnd(sum.OK, sum.Skipped, sum.Failed, stopped)
+	return ""
 }
 
 // downloadSingle runs one track as a job of 1: the same lifecycle as a

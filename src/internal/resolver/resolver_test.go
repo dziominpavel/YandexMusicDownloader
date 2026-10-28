@@ -28,15 +28,42 @@ func TestParseTrack(t *testing.T) {
 
 func TestParseRejectsNonTrack(t *testing.T) {
 	for _, in := range []string{
-		"https://music.yandex.ru/album/10733135",
 		"https://music.yandex.ru/chart",
 		"https://example.com/album/1/track/2",
 		"not a url",
 		"",
+		"https://music.yandex.ru/album/10733135/track",
+		"https://music.yandex.ru/album/10733135/trac",
 	} {
 		if _, err := Parse(in); err == nil {
 			t.Errorf("Parse(%q) must fail", in)
 		}
+	}
+}
+
+func TestParseAlbum(t *testing.T) {
+	cases := []struct {
+		in      string
+		albumID string
+	}{
+		{"https://music.yandex.ru/album/10733135", "10733135"},
+		{"https://music.yandex.by/album/10555?utm_source=copy", "10555"},
+		{"http://music.yandex.kz/album/1", "1"},
+		{"music.yandex.com/album/99", "99"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.in, func(t *testing.T) {
+			ref, err := Parse(tt.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ref.Kind != KindAlbum {
+				t.Fatalf("kind=%d want %d", ref.Kind, KindAlbum)
+			}
+			if ref.AlbumID != tt.albumID {
+				t.Fatalf("album=%s want %s", ref.AlbumID, tt.albumID)
+			}
+		})
 	}
 }
 
