@@ -8,13 +8,15 @@
   /* Шапка: название слева, шестерёнка-настройки справа на одном уровне */
   #head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   #head h2 { margin: 0; }
-  #settingsBtn { padding: 6px 10px; font-size: 18px; line-height: 1; background: #2d2d2d; color: #ddd; border: 1px solid #3c3c3c; border-radius: 4px; cursor: pointer; }
-  #settingsBtn:hover { background: #3a3a3a; }
-  #settingsBtn:disabled { cursor: wait; opacity: 0.6; }
+  #settingsBtn, #openFolderBtn { padding: 6px 10px; font-size: 18px; line-height: 1; background: #2d2d2d; color: #ddd; border: 1px solid #3c3c3c; border-radius: 4px; cursor: pointer; }
+  #settingsBtn:hover, #openFolderBtn:hover { background: #3a3a3a; }
+  #settingsBtn:disabled, #openFolderBtn:disabled { cursor: wait; opacity: 0.6; }
+  #headActions { display: flex; gap: 8px; }
   /* Один grid на строку ввода + статусбар (1fr auto):
      полоса идёт строго под полем ввода, процент — по центру под «Скачать». */
   #row { display: grid; grid-template-columns: 1fr auto; gap: 14px 8px; margin-top: 14px; }
   #link { padding: 8px; font-size: 14px; min-width: 0; }
+  #link.drop { outline: 2px solid #79c0ff; outline-offset: 1px; }
   #dl { padding: 8px 20px; font-size: 14px; cursor: pointer; }
   #dl:disabled { cursor: wait; opacity: 0.6; }
   /* На время скачивания та же кнопка становится «■ Остановить». */
@@ -38,6 +40,14 @@
   .prow { margin: 2px 0; }
   .pbar { display: inline-block; width: 160px; height: 8px; background: #333; vertical-align: middle; margin: 0 8px; }
   .pfill { height: 100%; background: #79c0ff; width: 0%; }
+  /* Компактный предпросмотр вставленной ссылки: не мешает кнопке «Скачать». */
+  #preview { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  #preview[hidden] { display: none; }
+  #previewCover { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; background: #333; }
+  #previewText { min-width: 0; }
+  #previewTitle { font-size: 14px; color: #eee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #previewSub { font-size: 12px; color: #aaa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
   #tracks { margin-top: 8px; font-family: Consolas, monospace; font-size: 13px; }
   .thead { color: #ddd; margin: 4px 0; }
   .trow { display: flex; gap: 8px; align-items: center; margin: 2px 0; }
@@ -95,10 +105,14 @@
 <body>
 <div id="head">
   <h2>YandexMusicDownloader</h2>
-  <button id="settingsBtn" title="Настройки">⚙</button>
+  <div id="headActions">
+    <button id="openFolderBtn" title="Открыть папку загрузок">📂</button>
+    <button id="settingsBtn" title="Настройки">⚙</button>
+  </div>
 </div>
 <div id="row">
-  <input id="link" placeholder="Вставь ссылку на трек, альбом или плейлист. Можно несколько через пробел/перенос строки">
+  <input id="link" list="linkHistory" placeholder="Вставь ссылку на трек, альбом или плейлист. Можно несколько через пробел/перенос строки">
+  <datalist id="linkHistory"></datalist>
   <button id="dl">Скачать</button>
   <div id="statusbar">
     <div id="sbfillwrap">
@@ -106,6 +120,13 @@
       <div id="sbmeta"><span id="sbcount"></span><span id="sbbytes"></span></div>
     </div>
     <span id="sbpct">0%</span>
+  </div>
+</div>
+<div id="preview" hidden>
+  <img id="previewCover" alt="">
+  <div id="previewText">
+    <div id="previewTitle"></div>
+    <div id="previewSub"></div>
   </div>
 </div>
 <div id="tracks"></div>
@@ -155,6 +176,16 @@
     </div>
     <div class="scheck"><input type="checkbox" id="sConvert"><label for="sConvert">ALAC/M4A → FLAC (через ffmpeg.exe)</label></div>
     <div class="scheck"><input type="checkbox" id="sEmbedCover"><label for="sEmbedCover">Встраивать обложку (текстовые теги пишутся)</label></div>
+    <div class="scheck"><input type="checkbox" id="sEmbedLyrics"><label for="sEmbedLyrics">Встраивать текст песни в тег</label></div>
+    <div class="scheck"><input type="checkbox" id="sSaveLrc"><label for="sSaveLrc">Сохранять синхронизированную лирику .lrc рядом</label></div>
+    <div class="scheck"><input type="checkbox" id="sSubdirs"><label for="sSubdirs">Создавать подпапки по шаблону</label></div>
+    <div class="sfield">
+      <label for="sSubdirTemplate">Шаблон подпапок</label>
+      <div class="sline">
+        <input type="text" id="sSubdirTemplate" placeholder="Исполнитель/Альбом/">
+      </div>
+    </div>
+    <div class="scheck"><input type="checkbox" id="sExportM3u"><label for="sExportM3u">Экспортировать плейлист/альбом в .m3u</label></div>
     <div id="settingsError"></div>
     <div class="sbuttons">
       <button id="sCancel">Отмена</button>
@@ -203,6 +234,104 @@
     log.appendChild(div);
   }
   function fmtMB(b) { return (b / 1048576).toFixed(1); }
+
+  // --- Открыть папку загрузок ---
+  const openFolderBtn = document.getElementById('openFolderBtn');
+  openFolderBtn.onclick = async () => {
+    try { await window.go.ui.App.OpenOutputDir(); }
+    catch (e) { line('[error] ' + e, 'err'); }
+  };
+
+  // --- История последних ссылок (localStorage, максимум 20) ---
+  const historyList = document.getElementById('linkHistory');
+  const HISTORY_KEY = 'yamdl.linkHistory';
+  function loadHistory() {
+    try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
+  }
+  function renderHistory() {
+    historyList.innerHTML = '';
+    for (const item of loadHistory()) {
+      const opt = document.createElement('option');
+      opt.value = item;
+      historyList.appendChild(opt);
+    }
+  }
+  function rememberLink(link) {
+    let items = loadHistory().filter((x) => x !== link);
+    items.unshift(link);
+    items = items.slice(0, 20);
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(items)); } catch (e) {}
+    renderHistory();
+  }
+  renderHistory();
+
+  // --- Предпросмотр ссылки: обложка и название, не блокирует скачивание ---
+  const preview = document.getElementById('preview');
+  const previewCover = document.getElementById('previewCover');
+  const previewTitle = document.getElementById('previewTitle');
+  const previewSub = document.getElementById('previewSub');
+  let previewSeq = 0;
+  function hidePreview() {
+    previewSeq++;
+    preview.hidden = true;
+    previewCover.removeAttribute('src');
+    previewTitle.textContent = '';
+    previewSub.textContent = '';
+  }
+  async function updatePreview() {
+    const link = input.value.trim();
+    // Несколько ссылок разом — превью не показываем.
+    if (!link || /\s/.test(link)) { hidePreview(); return; }
+    const seq = ++previewSeq;
+    try {
+      const p = await window.go.ui.App.PreviewLink(link);
+      if (seq !== previewSeq) return;
+      if (!p || !p.Title) { hidePreview(); return; }
+      previewTitle.textContent = p.Title;
+      previewSub.textContent = p.Subtitle || '';
+      if (p.CoverURL) {
+        previewCover.src = p.CoverURL;
+        previewCover.hidden = false;
+      } else {
+        previewCover.removeAttribute('src');
+        previewCover.hidden = true;
+      }
+      preview.hidden = false;
+    } catch (e) {
+      if (seq === previewSeq) hidePreview();
+    }
+  }
+  let previewTimer = 0;
+  input.addEventListener('input', () => {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(updatePreview, 500);
+  });
+
+  // --- Drag & Drop ссылок на окно ---
+  async function useDroppedLink(e) {
+    const dt = e.dataTransfer;
+    if (!dt) return false;
+    const text = dt.getData('text/uri-list') || dt.getData('text/plain');
+    const first = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0];
+    if (!first) return false;
+    input.value = first;
+    input.focus();
+    await updatePreview();
+    return true;
+  }
+  input.addEventListener('dragover', (e) => { e.preventDefault(); input.classList.add('drop'); });
+  input.addEventListener('dragleave', () => input.classList.remove('drop'));
+  input.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    input.classList.remove('drop');
+    await useDroppedLink(e);
+  });
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    await useDroppedLink(e);
+  });
 
   // --- Агрегированный статусбар ---
   // job = {total, states: Map<id, {share, done, total}>}
@@ -427,6 +556,8 @@
     }
     const link = input.value.trim();
     if (!link) return;
+    rememberLink(link);
+    hidePreview();
     input.value = '';
     input.focus();
     busy = true;
@@ -458,6 +589,11 @@
   const sPlus = document.getElementById('sPlus');
   const sConvert = document.getElementById('sConvert');
   const sEmbedCover = document.getElementById('sEmbedCover');
+  const sEmbedLyrics = document.getElementById('sEmbedLyrics');
+  const sSaveLrc = document.getElementById('sSaveLrc');
+  const sSubdirs = document.getElementById('sSubdirs');
+  const sSubdirTemplate = document.getElementById('sSubdirTemplate');
+  const sExportM3u = document.getElementById('sExportM3u');
   const tokenCheck = document.getElementById('tokenCheck');
   const settingsError = document.getElementById('settingsError');
   const tokenHelpLink = document.getElementById('tokenHelpLink');
@@ -477,6 +613,12 @@
   }
   sDiffOutput.addEventListener('change', syncOutputField);
   sLibrary.addEventListener('input', syncOutputField);
+
+  // Шаблон подпапок редактируется только при включённых подпапках.
+  function syncSubdirTemplate() {
+    sSubdirTemplate.disabled = !sSubdirs.checked;
+  }
+  sSubdirs.addEventListener('change', syncSubdirTemplate);
 
   // Степпер 1..10 вместо крошечных стрелок number-input.
   function workersStep(delta) {
@@ -545,6 +687,12 @@
       sWorkers.value = s.Workers;
       sConvert.checked = !!s.ConvertM4A;
       sEmbedCover.checked = !!s.EmbedCover;
+      sEmbedLyrics.checked = s.EmbedLyrics !== false;
+      sSaveLrc.checked = !!s.SaveLRC;
+      sSubdirs.checked = !!s.Subdirs;
+      sSubdirTemplate.value = s.SubdirTemplate || '%artist%/%album%';
+      sExportM3u.checked = !!s.ExportM3U;
+      syncSubdirTemplate();
       tokenCheck.textContent = '';
       syncTokenHint();
       overlay.classList.add('open');
@@ -605,6 +753,11 @@
         Workers: workers,
         ConvertM4A: sConvert.checked,
         EmbedCover: sEmbedCover.checked,
+        EmbedLyrics: sEmbedLyrics.checked,
+        SaveLRC: sSaveLrc.checked,
+        Subdirs: sSubdirs.checked,
+        SubdirTemplate: sSubdirTemplate.value,
+        ExportM3U: sExportM3u.checked,
       });
       closeSettings();
       line('[done] настройки сохранены', 'done');

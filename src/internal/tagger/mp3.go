@@ -65,6 +65,13 @@ func writeMP3(path string, m Meta) error {
 			Description: sourceURLDesc, Text: m.SourceURL,
 		})
 	}
+	if m.Lyrics != "" {
+		tag.DeleteFrames("USLT")
+		tag.AddUnsynchronisedLyricsFrame(id3v2.UnsynchronisedLyricsFrame{
+			Encoding: id3v2.EncodingUTF8, Language: "eng",
+			ContentDescriptor: "Lyrics", Lyrics: m.Lyrics,
+		})
+	}
 	if len(m.Cover) > 0 && strings.HasPrefix(m.CoverMIME, "image/") {
 		tag.DeleteFrames(tag.CommonID("Attached picture"))
 		tag.AddAttachedPicture(id3v2.PictureFrame{

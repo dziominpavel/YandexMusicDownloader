@@ -118,3 +118,37 @@ func TestDestPathMissingMeta(t *testing.T) {
 		t.Fatalf("got %q want %q", got, want)
 	}
 }
+
+func TestDestPathSubdirs(t *testing.T) {
+	tr := &Track{ID: "8", Title: "Песня", Artists: []string{"Амирчик"},
+		Album: "Альбом: 1", Year: "2020"}
+
+	flat := (&Client{}).destPath("out", tr, ".flac")
+	if want := filepath.Join("out", "Амирчик - Песня.flac"); flat != want {
+		t.Fatalf("flat: got %q want %q", flat, want)
+	}
+
+	c := &Client{Subdirs: true, SubdirTemplate: "%artist%/%year% - %album%"}
+	got := c.destPath("out", tr, ".flac")
+	want := filepath.Join("out", "Амирчик", "2020 - Альбом_ 1", "Амирчик - Песня.flac")
+	if got != want {
+		t.Fatalf("subdirs: got %q want %q", got, want)
+	}
+
+	// Пустой шаблон → Artist/Album.
+	c = &Client{Subdirs: true}
+	got = c.destPath("out", tr, ".flac")
+	want = filepath.Join("out", "Амирчик", "Альбом_ 1", "Амирчик - Песня.flac")
+	if got != want {
+		t.Fatalf("default template: got %q want %q", got, want)
+	}
+}
+
+func TestLRCToText(t *testing.T) {
+	lrc := "[00:01.20]Первая строка\r\n[00:05]Вторая строка\n"
+	got := lrcToText(lrc)
+	want := "Первая строка\nВторая строка"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}

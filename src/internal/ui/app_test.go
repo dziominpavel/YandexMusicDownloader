@@ -321,3 +321,59 @@ func TestCheckDuplicateWarnsWhileScanning(t *testing.T) {
 		}
 	}
 }
+
+func TestSplitLinks(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"https://a/1", []string{"https://a/1"}},
+		{"https://a/1 https://b/2", []string{"https://a/1", "https://b/2"}},
+		{"https://a/1\nhttps://b/2\r\nhttps://c/3", []string{"https://a/1", "https://b/2", "https://c/3"}},
+		{"https://a/1,https://b/2;https://c/3", []string{"https://a/1", "https://b/2", "https://c/3"}},
+		{"  https://a/1  \n\n ", []string{"https://a/1"}},
+		{"", nil},
+	}
+	for _, c := range cases {
+		got := splitLinks(c.in)
+		if len(got) != len(c.want) {
+			t.Fatalf("splitLinks(%q) = %q, want %q", c.in, got, c.want)
+		}
+		for i := range c.want {
+			if got[i] != c.want[i] {
+				t.Fatalf("splitLinks(%q) = %q, want %q", c.in, got, c.want)
+			}
+		}
+	}
+}
+
+func TestExportM3U(t *testing.T) {
+	dir := t.TempDir()
+	p1 := filepath.Join(dir, "Artist - One.flac")
+	p2 := filepath.Join(dir, "Artist - Two.mp3")
+	for _, p := range []string{p1, p2} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := &App{outputDir: dir, cfg: config.Config{ExportM3U: true}}
+	a.exportM3U("Мой: плейлист", []string{p1, p2})
+
+	data, err := os.ReadFile(filepath.Join(dir, "Мой_ плейлист.m3u"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	for _, want := range []string{"#EXTM3U", "Artist - One.flac", "Artist - Two.mp3"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("m3u must contain %q:\n%s", want, body)
+		}
+	}
+
+	// Выключенный экспорт не создаёт файл.
+	a = &App{outputDir: dir, cfg: config.Config{ExportM3U: false}}
+	a.exportM3U("No", []string{p1})
+	if _, err := os.Stat(filepath.Join(dir, "No.m3u")); !os.IsNotExist(err) {
+		t.Fatal("disabled export must not write a file")
+	}
+}

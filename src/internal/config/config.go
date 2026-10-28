@@ -51,6 +51,16 @@ type Config struct {
 	// LibraryDir is the user's music collection root (LIBRARY_DIR).
 	// Empty = collection indexing and duplicate checks are off.
 	LibraryDir string
+	// EmbedLyrics embeds lyrics into tags by default.
+	EmbedLyrics bool
+	// SaveLRC saves synchronized lyrics as .lrc next to file.
+	SaveLRC bool
+	// Subdirs enables organizing files into subdirectories.
+	Subdirs bool
+	// SubdirTemplate is the subdirectory template (e.g. "Исполнитель/Альбом/").
+	SubdirTemplate string
+	// ExportM3U exports playlist/album as .m3u.
+	ExportM3U bool
 }
 
 // DefaultPath returns the .env path next to the running executable.
@@ -64,9 +74,9 @@ func DefaultPath() (string, error) {
 
 // Load reads KEY=VALUE pairs from path. Missing file is not an error
 // (empty config = preview-only mode). OUTPUT_DIR defaults to ./downloads,
-// CONVERT_M4A and EMBED_COVER default to true.
+// CONVERT_M4A and EMBED_COVER default to true, EMBED_LYRICS defaults to true.
 func Load(path string) (Config, error) {
-	cfg := Config{OutputDir: "./downloads", ConvertM4A: true, EmbedCover: true, Workers: DefaultWorkers}
+	cfg := Config{OutputDir: "./downloads", ConvertM4A: true, EmbedCover: true, Workers: DefaultWorkers, EmbedLyrics: true, SaveLRC: false, Subdirs: false, SubdirTemplate: "%artist%/%album%", ExportM3U: false}
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -117,6 +127,32 @@ func Load(path string) (Config, error) {
 		case "PLAYLIST_WORKERS":
 			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 1 && n <= MaxWorkers {
 				cfg.Workers = n
+			}
+		case "EMBED_LYRICS":
+			switch strings.ToLower(v) {
+			case "0", "false", "no", "off":
+				cfg.EmbedLyrics = false
+			case "1", "true", "yes", "on":
+				cfg.EmbedLyrics = true
+			}
+		case "SAVE_LRC":
+			switch strings.ToLower(v) {
+			case "1", "true", "yes", "on":
+				cfg.SaveLRC = true
+			}
+		case "SUBDIRS":
+			switch strings.ToLower(v) {
+			case "1", "true", "yes", "on":
+				cfg.Subdirs = true
+			}
+		case "SUBDIR_TEMPLATE":
+			if v != "" {
+				cfg.SubdirTemplate = v
+			}
+		case "EXPORT_M3U":
+			switch strings.ToLower(v) {
+			case "1", "true", "yes", "on":
+				cfg.ExportM3U = true
 			}
 		}
 	}

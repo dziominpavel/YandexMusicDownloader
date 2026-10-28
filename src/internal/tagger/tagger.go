@@ -28,6 +28,7 @@ type Meta struct {
 	DiscNum    int
 	TrackID    string
 	SourceURL  string
+	Lyrics     string
 	Cover      []byte
 	CoverMIME  string
 }
@@ -82,6 +83,7 @@ func MetaForTrack(t *downloader.Track) Meta {
 	} else if m.TrackID != "" {
 		m.SourceURL = fmt.Sprintf("https://music.yandex.ru/track/%s", m.TrackID)
 	}
+	m.Lyrics = strings.TrimSpace(t.Lyrics)
 	return m
 }
 

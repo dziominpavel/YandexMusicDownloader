@@ -118,7 +118,7 @@ func (c *Client) downloadMP3Track(track *Track, outputDir string, emit func(Even
 		}
 	}()
 
-	dest = destPath(outputDir, track, ".mp3")
+	dest = c.destPath(outputDir, track, ".mp3")
 	if _, serr := os.Stat(dest); serr == nil {
 		return dest, fmt.Errorf("%w: %s", ErrAlreadyExists, dest)
 	}
@@ -140,12 +140,13 @@ func (c *Client) downloadMP3Track(track *Track, outputDir string, emit func(Even
 		return "", err
 	}
 	defer os.Remove(tmp) // no-op after successful publish
-	if err = c.runTagHook(tmp, track); err != nil {
+	if err = c.prepareAndTag(tmp, track); err != nil {
 		return "", err
 	}
 	if err = publishTemp(tmp, dest); err != nil {
 		return "", err
 	}
+	c.saveLyricsLRC(dest, track)
 	return dest, nil
 }
 

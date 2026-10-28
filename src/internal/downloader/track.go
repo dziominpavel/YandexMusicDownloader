@@ -40,6 +40,13 @@ type Track struct {
 	DiscNum    int
 	CoverURI   string
 	Available  bool
+	// Lyrics is the plain song text embedded into the tag.
+	Lyrics string
+	// LyricsLRC is the raw synchronized lyrics saved as .lrc.
+	LyricsLRC string
+	// lyricsLoaded marks that the lyrics request already ran for this
+	// track (a fallback path must not ask twice).
+	lyricsLoaded bool
 }
 
 // FullTitle is "Title Version" trimmed.
@@ -77,6 +84,15 @@ type Client struct {
 	// ConvertM4A turns ALAC-in-M4A lossless into plain FLAC via the
 	// ffmpeg.exe sidecar (see convert.go). No ffmpeg = M4A stays M4A.
 	ConvertM4A bool
+	// EmbedLyrics embeds song text into tags (EMBED_LYRICS, default true).
+	EmbedLyrics bool
+	// SaveLRC writes synchronized lyrics next to the audio file
+	// (SAVE_LRC, default false).
+	SaveLRC bool
+	// Subdirs organizes files into subdirectories (SUBDIRS, default false).
+	Subdirs bool
+	// SubdirTemplate is the subdirectory template (SUBDIR_TEMPLATE).
+	SubdirTemplate string
 	// fetchTrack resolves metadata; override in tests to avoid network.
 	fetchTrack func(string) (*Track, error)
 	// downloadOne runs the per-track pipeline; override in tests.
@@ -102,7 +118,11 @@ type Client struct {
 
 // NewClient builds a downloader. Empty token = 30-second previews only.
 func NewClient(token string) *Client {
-	c := &Client{token: token, http: &http.Client{Timeout: 30 * time.Second}, ConvertM4A: true, PlaylistWorkers: defaultPlaylistWorkers}
+	c := &Client{
+		token: token, http: &http.Client{Timeout: 30 * time.Second},
+		ConvertM4A: true, EmbedLyrics: true, SubdirTemplate: "%artist%/%album%",
+		PlaylistWorkers: defaultPlaylistWorkers,
+	}
 	c.fetchTrack = c.TrackInfo
 	return c
 }

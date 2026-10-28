@@ -68,3 +68,43 @@ func destPath(outputDir string, t *Track, ext string) string {
 	}
 	return filepath.Join(outputDir, trackStem(t)+ext)
 }
+
+// destPath builds the destination for one track, honouring optional
+// subdirectories. Subdirs=false keeps the flat layout.
+func (c *Client) destPath(outputDir string, t *Track, ext string) string {
+	if !c.Subdirs {
+		return destPath(outputDir, t, ext)
+	}
+	sub := subdirFor(t, c.SubdirTemplate)
+	if sub == "" {
+		return destPath(outputDir, t, ext)
+	}
+	if !strings.HasPrefix(ext, ".") {
+		ext = "." + ext
+	}
+	return filepath.Join(outputDir, sub, trackStem(t)+ext)
+}
+
+// subdirFor expands %artist%, %album% and %year% into sanitized path
+// segments. Empty template falls back to Artist/Album.
+func subdirFor(t *Track, tmpl string) string {
+	tmpl = strings.TrimSpace(tmpl)
+	if tmpl == "" {
+		tmpl = "%artist%/%album%"
+	}
+	artist := displayArtist(t.Artists, t.FullTitle())
+	album := cleanSegment(t.Album)
+	year := cleanSegment(t.Year)
+
+	var parts []string
+	for _, raw := range strings.FieldsFunc(tmpl, func(r rune) bool { return r == '/' || r == '\\' }) {
+		part := raw
+		part = strings.ReplaceAll(part, "%artist%", artist)
+		part = strings.ReplaceAll(part, "%album%", album)
+		part = strings.ReplaceAll(part, "%year%", year)
+		if part = cleanSegment(part); part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return filepath.Join(parts...)
+}

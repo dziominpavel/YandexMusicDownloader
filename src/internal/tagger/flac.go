@@ -39,6 +39,7 @@ func writeFLAC(path string, m Meta) error {
 	addComment(comments, "DATE", m.Year)
 	addComment(comments, "YANDEX_TRACK_ID", m.TrackID)
 	addComment(comments, "COMMENT", m.SourceURL)
+	addComment(comments, "LYRICS", m.Lyrics)
 
 	vorbisBlock := comments.Marshal()
 	meta := make([]*flac.MetaDataBlock, 0, len(file.Meta)+2)

@@ -211,7 +211,7 @@ func (c *Client) DownloadTrack(track *Track, outputDir string, emit func(Event),
 			if res.Path != "" && c.OnPublished != nil {
 				c.OnPublished(res.Path)
 			}
-			emitEvent(emit, Event{Kind: KindDone, Label: label, TrackID: tid, Format: res.Format, Fallback: res.Fallback, Converted: res.Converted})
+			emitEvent(emit, Event{Kind: KindDone, Label: label, TrackID: tid, Format: res.Format, Fallback: res.Fallback, Converted: res.Converted, Path: res.Path})
 		case errors.Is(err, ErrAlreadyExists):
 			emitEvent(emit, Event{Kind: KindSkipped, Label: label, TrackID: tid, Detail: res.Path})
 		case errors.Is(err, ErrStopped) || c.Stopped():
@@ -263,9 +263,9 @@ func (c *Client) downloadLossless(track *Track, outputDir string, uid int64, onP
 			format = "FLAC"
 		}
 	}
-	dest := destPath(outputDir, track, losslessExt(info.Codec))
+	dest := c.destPath(outputDir, track, losslessExt(info.Codec))
 	if ffmpeg != "" {
-		dest = destPath(outputDir, track, ".flac")
+		dest = c.destPath(outputDir, track, ".flac")
 	}
 	if _, err := os.Stat(dest); err == nil {
 		return Result{Path: dest, Format: format}, fmt.Errorf("%w: %s", ErrAlreadyExists, dest)
@@ -308,7 +308,7 @@ func (c *Client) downloadLossless(track *Track, outputDir string, uid int64, onP
 			tmp = flacTmp
 			converted = true
 		}
-		if err := c.runTagHook(tmp, track); err != nil {
+		if err := c.prepareAndTag(tmp, track); err != nil {
 			os.Remove(tmp)
 			lastErr = err
 			continue
@@ -317,6 +317,7 @@ func (c *Client) downloadLossless(track *Track, outputDir string, uid int64, onP
 			lastErr = err
 			continue
 		}
+		c.saveLyricsLRC(dest, track)
 		return Result{Path: dest, Format: format, Converted: converted}, nil
 	}
 	if lastErr == nil {

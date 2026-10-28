@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -65,7 +67,11 @@ type App struct {
 // NewApp loads config and prepares the downloader.
 func NewApp() *App {
 	a := &App{outputDir: "./downloads"}
-	a.cfg = config.Config{OutputDir: "./downloads", ConvertM4A: true, EmbedCover: true, Workers: config.DefaultWorkers}
+	a.cfg = config.Config{
+		OutputDir: "./downloads", ConvertM4A: true, EmbedCover: true,
+		EmbedLyrics: true, SubdirTemplate: "%artist%/%album%",
+		Workers: config.DefaultWorkers,
+	}
 	envPath, err := config.DefaultPath()
 	if err != nil {
 		a.ready = "config: " + err.Error()
@@ -109,6 +115,10 @@ func (a *App) apply(cfg config.Config) {
 	}
 	c := downloader.NewClient(cfg.Token)
 	c.ConvertM4A = cfg.ConvertM4A
+	c.EmbedLyrics = cfg.EmbedLyrics
+	c.SaveLRC = cfg.SaveLRC
+	c.Subdirs = cfg.Subdirs
+	c.SubdirTemplate = cfg.SubdirTemplate
 	c.PlaylistWorkers = cfg.Workers
 	c.Tag = tagger.Adapter(cfg.EmbedCover)
 	a.client = c
@@ -470,7 +480,8 @@ func (a *App) downloadAlbum(id string) string {
 	}
 	a.jobStart(title, len(tracks))
 	a.trackRows(tracks)
-	sum := a.runBatch(tracks)
+	sum, paths := a.runBatchCollect(tracks)
+	a.exportM3U(title, paths)
 	stopped := sum.Stopped > 0 || a.stopRequested()
 	if stopped {
 		a.log(fmt.Sprintf("[stopped] прервано: %d ok, %d skip, %d error", sum.OK, sum.Skipped, sum.Failed), "stopped")
@@ -619,11 +630,65 @@ func (a *App) jobCallbacks() (func(downloader.Event), downloader.ProgressFunc) {
 // runBatch downloads the playlist tracks through the injectable hook or
 // the real worker pool, wiring the shared job callbacks.
 func (a *App) runBatch(tracks []*downloader.Track) downloader.Summary {
+	sum, _ := a.runBatchCollect(tracks)
+	return sum
+}
+
+// runBatchCollect is runBatch plus the paths of successfully published
+// files, used by the .m3u export.
+func (a *App) runBatchCollect(tracks []*downloader.Track) (downloader.Summary, []string) {
 	emit, onProgress := a.jobCallbacks()
-	if a.downloadBatch != nil {
-		return a.downloadBatch(tracks, a.outputDir, emit, onProgress)
+	var paths []string
+	collect := func(e downloader.Event) {
+		if e.Kind == downloader.KindDone && e.Path != "" {
+			paths = append(paths, e.Path)
+		}
+		emit(e)
 	}
-	return a.client.DownloadPlaylist(tracks, a.outputDir, emit, onProgress)
+	var sum downloader.Summary
+	if a.downloadBatch != nil {
+		sum = a.downloadBatch(tracks, a.outputDir, collect, onProgress)
+	} else {
+		sum = a.client.DownloadPlaylist(tracks, a.outputDir, collect, onProgress)
+	}
+	return sum, paths
+}
+
+// exportM3U writes a playlist file next to the downloaded tracks when
+// EXPORT_M3U is enabled. Failures are silent: audio files are already
+// valid and the export is a convenience.
+func (a *App) exportM3U(title string, paths []string) {
+	if !a.cfg.ExportM3U || len(paths) == 0 {
+		return
+	}
+	dir := a.outputDir
+	if dir == "" {
+		dir = filepath.Dir(paths[0])
+	}
+	name := m3uSafeName(title)
+	if name == "" {
+		name = "playlist"
+	}
+	var b strings.Builder
+	b.WriteString("#EXTM3U\n")
+	for _, p := range paths {
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			rel = p
+		}
+		b.WriteString(strings.ReplaceAll(rel, `\`, "/"))
+		b.WriteByte('\n')
+	}
+	_ = os.WriteFile(filepath.Join(dir, name+".m3u"), []byte(b.String()), 0o644)
+}
+
+// m3uSafeName sanitizes a playlist title for use as a file name.
+func m3uSafeName(title string) string {
+	repl := strings.NewReplacer(
+		"/", "_", `\`, "_", ":", "_", "*", "_",
+		"?", "_", `"`, "_", "<", "_", ">", "_", "|", "_",
+	)
+	return strings.Trim(strings.TrimSpace(repl.Replace(title)), ". ")
 }
 
 // downloadPlaylist resolves a playlist UUID into tracks, asks about the
@@ -652,7 +717,8 @@ func (a *App) downloadPlaylist(uuid string) string {
 	}
 	a.jobStart(title, len(tracks))
 	a.trackRows(tracks)
-	sum := a.runBatch(tracks)
+	sum, paths := a.runBatchCollect(tracks)
+	a.exportM3U(title, paths)
 	stopped := sum.Stopped > 0 || a.stopRequested()
 	if stopped {
 		a.log(fmt.Sprintf("[stopped] прервано: %d ok, %d skip, %d error", sum.OK, sum.Skipped, sum.Failed), "stopped")
@@ -698,6 +764,82 @@ func (a *App) stopRequested() bool {
 	return c != nil && c.Stopped()
 }
 
+// Preview is the compact link preview shown above the input field.
+type Preview struct {
+	Kind     string // "track", "album", "playlist"
+	Title    string
+	Subtitle string
+	CoverURL string
+}
+
+// PreviewLink resolves a pasted link just enough to show a cover and a
+// title. It never downloads audio and never blocks «Скачать».
+func (a *App) PreviewLink(link string) (Preview, error) {
+	if a.client == nil {
+		return Preview{}, fmt.Errorf("нет токена")
+	}
+	ref, err := resolver.Parse(strings.TrimSpace(link))
+	if err != nil {
+		return Preview{}, err
+	}
+	switch ref.Kind {
+	case resolver.KindPlaylist:
+		pl, err := a.fetchPlaylistUUID(ref.PlaylistUUID)
+		if err != nil {
+			return Preview{}, err
+		}
+		return previewOfList("playlist", pl.Title, pl.Tracks), nil
+	case resolver.KindAlbum:
+		alb, err := a.client.Album(ref.AlbumID)
+		if err != nil {
+			return Preview{}, err
+		}
+		return previewOfList("album", alb.Title, alb.Tracks), nil
+	default:
+		t, err := a.client.ResolveTrack(ref.TrackID)
+		if err != nil {
+			return Preview{}, err
+		}
+		p := Preview{Kind: "track", Title: t.FullTitle(), Subtitle: strings.Join(t.Artists, ", ")}
+		if t.Album != "" {
+			p.Subtitle = strings.TrimSpace(p.Subtitle + " · " + t.Album)
+		}
+		p.CoverURL = tagger.CoverURL(t.CoverURI, tagger.DefaultCoverSize)
+		return p, nil
+	}
+}
+
+func previewOfList(kind, title string, tracks []*downloader.Track) Preview {
+	p := Preview{Kind: kind, Title: title, Subtitle: fmt.Sprintf("%d треков", len(tracks))}
+	if len(tracks) > 0 {
+		p.CoverURL = tagger.CoverURL(tracks[0].CoverURI, tagger.DefaultCoverSize)
+		if len(tracks[0].Artists) > 0 {
+			p.Subtitle = strings.Join(tracks[0].Artists, ", ") + " · " + p.Subtitle
+		}
+	}
+	return p
+}
+
+// OpenOutputDir opens the downloads folder in the system file manager.
+func (a *App) OpenOutputDir() error {
+	dir := a.outputDir
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	var cmd *exec.Cmd
+	switch goruntime.GOOS {
+	case "windows":
+		cmd = exec.Command("explorer", dir)
+	case "darwin":
+		cmd = exec.Command("open", dir)
+	default:
+		cmd = exec.Command("xdg-open", dir)
+	}
+	return cmd.Start()
+}
+
 // PickFolder opens the native directory picker and returns the chosen
 // path ("" when cancelled). Used by the settings window.
 func (a *App) PickFolder() (string, error) {
@@ -730,12 +872,17 @@ func (a *App) isBusy() bool {
 // Settings is the settings-window form: everything the UI exposes,
 // mapped 1:1 to .env keys (see config.Load).
 type Settings struct {
-	Token      string
-	OutputDir  string
-	LibraryDir string
-	Workers    int
-	ConvertM4A bool
-	EmbedCover bool
+	Token          string
+	OutputDir      string
+	LibraryDir     string
+	Workers        int
+	ConvertM4A     bool
+	EmbedCover     bool
+	EmbedLyrics    bool
+	SaveLRC        bool
+	Subdirs        bool
+	SubdirTemplate string
+	ExportM3U      bool
 }
 
 // GetSettings returns the currently applied configuration with defaults
@@ -754,13 +901,22 @@ func (a *App) GetSettings() (Settings, error) {
 	if workers < 1 || workers > config.MaxWorkers {
 		workers = config.DefaultWorkers
 	}
+	subdirTemplate := cfg.SubdirTemplate
+	if subdirTemplate == "" {
+		subdirTemplate = "%artist%/%album%"
+	}
 	return Settings{
-		Token:      cfg.Token,
-		OutputDir:  out,
-		LibraryDir: cfg.LibraryDir,
-		Workers:    workers,
-		ConvertM4A: cfg.ConvertM4A,
-		EmbedCover: cfg.EmbedCover,
+		Token:          cfg.Token,
+		OutputDir:      out,
+		LibraryDir:     cfg.LibraryDir,
+		Workers:        workers,
+		ConvertM4A:     cfg.ConvertM4A,
+		EmbedCover:     cfg.EmbedCover,
+		EmbedLyrics:    cfg.EmbedLyrics,
+		SaveLRC:        cfg.SaveLRC,
+		Subdirs:        cfg.Subdirs,
+		SubdirTemplate: subdirTemplate,
+		ExportM3U:      cfg.ExportM3U,
 	}, nil
 }
 
@@ -798,6 +954,10 @@ func (a *App) SaveSettings(s Settings) error {
 		return fmt.Errorf("число параллельных скачиваний: целое от 1 до %d", config.MaxWorkers)
 	}
 
+	subdirTemplate := strings.TrimSpace(s.SubdirTemplate)
+	if subdirTemplate == "" {
+		subdirTemplate = "%artist%/%album%"
+	}
 	updates := map[string]string{
 		"YANDEX_TOKEN":     s.Token,
 		"OUTPUT_DIR":       s.OutputDir,
@@ -805,18 +965,28 @@ func (a *App) SaveSettings(s Settings) error {
 		"CONVERT_M4A":      strconv.FormatBool(s.ConvertM4A),
 		"EMBED_COVER":      strconv.FormatBool(s.EmbedCover),
 		"LIBRARY_DIR":      s.LibraryDir,
+		"EMBED_LYRICS":     strconv.FormatBool(s.EmbedLyrics),
+		"SAVE_LRC":         strconv.FormatBool(s.SaveLRC),
+		"SUBDIRS":          strconv.FormatBool(s.Subdirs),
+		"SUBDIR_TEMPLATE":  subdirTemplate,
+		"EXPORT_M3U":       strconv.FormatBool(s.ExportM3U),
 	}
 	// Сначала файл, потом память: ошибка записи ничего не меняет.
 	if err := config.Write(a.envPath, updates); err != nil {
 		return err
 	}
 	cfg := config.Config{
-		Token:      s.Token,
-		OutputDir:  s.OutputDir,
-		LibraryDir: s.LibraryDir,
-		Workers:    s.Workers,
-		ConvertM4A: s.ConvertM4A,
-		EmbedCover: s.EmbedCover,
+		Token:          s.Token,
+		OutputDir:      s.OutputDir,
+		LibraryDir:     s.LibraryDir,
+		Workers:        s.Workers,
+		ConvertM4A:     s.ConvertM4A,
+		EmbedCover:     s.EmbedCover,
+		EmbedLyrics:    s.EmbedLyrics,
+		SaveLRC:        s.SaveLRC,
+		Subdirs:        s.Subdirs,
+		SubdirTemplate: subdirTemplate,
+		ExportM3U:      s.ExportM3U,
 	}
 	a.apply(cfg)
 	if a.ready != "" {

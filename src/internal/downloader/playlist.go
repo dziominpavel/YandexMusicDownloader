@@ -110,8 +110,8 @@ func (c *Client) Playlist(uuid string) (*Playlist, error) {
 
 type albumWithTracksResult struct {
 	Result struct {
-		ID    any    `json:"id"`
-		Title string `json:"title"`
+		ID      any    `json:"id"`
+		Title   string `json:"title"`
 		Volumes [][]struct {
 			ID        any    `json:"id"`
 			Title     string `json:"title"`

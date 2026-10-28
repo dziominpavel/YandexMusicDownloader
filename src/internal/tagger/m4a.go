@@ -59,6 +59,9 @@ func writeM4A(path string, m Meta) error {
 	if m.SourceURL != "" {
 		file.SetCustomValues(m4aSourceField, m.SourceURL)
 	}
+	if m.Lyrics != "" {
+		file.SetLyrics(m.Lyrics)
+	}
 	if len(m.Cover) > 0 && (m.CoverMIME == "image/jpeg" || m.CoverMIME == "image/png") {
 		file.AddImage(mtag.Picture{MIME: m.CoverMIME, Type: mtag.PictureCoverFront, Data: m.Cover})
 	}

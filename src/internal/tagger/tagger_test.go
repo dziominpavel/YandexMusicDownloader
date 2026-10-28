@@ -60,7 +60,8 @@ func testMeta() Meta {
 		Album: "Test Album", Year: "2001", Genre: "rusrock",
 		TrackNum: 8, TrackTotal: 14, DiscNum: 1,
 		TrackID: "99", SourceURL: "https://music.yandex.ru/album/7/track/99",
-		Cover: cover, CoverMIME: "image/png"}
+		Lyrics: "Line one\nLine two",
+		Cover:  cover, CoverMIME: "image/png"}
 }
 
 func copyFixture(t *testing.T, name, ext string) string {
@@ -104,6 +105,14 @@ func TestMP3Roundtrip(t *testing.T) {
 	}
 	if pics := tag.GetFrames(tag.CommonID("Attached picture")); len(pics) == 0 {
 		t.Fatal("no cover attached")
+	}
+	lyrics := tag.GetFrames("USLT")
+	if len(lyrics) == 0 {
+		t.Fatal("no USLT frame")
+	}
+	uslt, ok := lyrics[0].(id3v2.UnsynchronisedLyricsFrame)
+	if !ok || uslt.Lyrics != "Line one\nLine two" {
+		t.Fatalf("USLT lyrics: %+v", lyrics[0])
 	}
 }
 
@@ -161,6 +170,9 @@ func TestFLACRoundtrip(t *testing.T) {
 	if pictures == 0 {
 		t.Fatal("no cover picture")
 	}
+	if got, err := comments.Get("LYRICS"); err != nil || len(got) != 1 || got[0] != "Line one\nLine two" {
+		t.Fatalf("LYRICS: got %q err %v", got, err)
+	}
 }
 
 func TestM4ARoundtrip(t *testing.T) {
@@ -181,5 +193,8 @@ func TestM4ARoundtrip(t *testing.T) {
 	}
 	if len(file.Images()) == 0 {
 		t.Fatal("no cover image")
+	}
+	if file.Lyrics() != "Line one\nLine two" {
+		t.Fatalf("lyrics: %q", file.Lyrics())
 	}
 }

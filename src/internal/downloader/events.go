@@ -25,6 +25,8 @@ type Event struct {
 	Format    string // "FLAC", "M4A", "MP3" (for KindDone)
 	Fallback  bool   // true when MP3 was used instead of lossless
 	Converted bool   // true when ALAC-in-M4A was converted to FLAC
+	// Path is the published file for KindDone (m3u export uses it).
+	Path string
 }
 
 // emitEvent delivers e unless emit is nil.

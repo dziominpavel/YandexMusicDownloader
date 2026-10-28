@@ -236,6 +236,39 @@ func TestWriteReplacesQuotedValue(t *testing.T) {
 	}
 }
 
+func TestLoadBehaviorFlags(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        string
+		embedLyrics bool
+		saveLRC     bool
+		subdirs     bool
+		exportM3U   bool
+		subdirTmpl  string
+	}{
+		{"по умолчанию", "", true, false, false, false, "%artist%/%album%"},
+		{"лирика выключена", "EMBED_LYRICS=false", false, false, false, false, "%artist%/%album%"},
+		{"всё включено", "EMBED_LYRICS=true\nSAVE_LRC=true\nSUBDIRS=true\nEXPORT_M3U=true\nSUBDIR_TEMPLATE=%year%/%album%", true, true, true, true, "%year%/%album%"},
+		{"мусор игнорируется", "EMBED_LYRICS=maybe\nSAVE_LRC=maybe\nSUBDIRS=maybe\nEXPORT_M3U=maybe", true, false, false, false, "%artist%/%album%"},
+	}
+	for _, c := range cases {
+		dir := t.TempDir()
+		p := filepath.Join(dir, ".env")
+		if err := os.WriteFile(p, []byte(c.body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if cfg.EmbedLyrics != c.embedLyrics || cfg.SaveLRC != c.saveLRC ||
+			cfg.Subdirs != c.subdirs || cfg.ExportM3U != c.exportM3U ||
+			cfg.SubdirTemplate != c.subdirTmpl {
+			t.Errorf("%s: got %+v", c.name, cfg)
+		}
+	}
+}
+
 func TestLoadPlaylistWorkers(t *testing.T) {
 	cases := []struct {
 		body string
