@@ -5,9 +5,15 @@
 
 ## [Unreleased]
 
+**Добавлено**
+- Файловый лог рядом с приложением: сбои и ошибки теперь можно разобрать после закрытия окна.
+
 **Исправлено**
 - В логе видно, почему вместо FLAC скачался MP3: показывается качество, кодек и битрейт, которые вернул Яндекс.
 - Ссылка на источник в тегах содержит обычный номер альбома, без записи вида 6.73558e+06.
+
+### Добавлено
+- `add-file-log`: пакет `internal/applog` пишет все строки окна в `app.log` рядом с exe (fallback `%LOCALAPPDATA%\YandexMusicDownloader\app.log`), формат RFC 3339 + `[уровень]`, ротация 5 МиБ в `app.log.1` с одной резервной копией, редакция `OAuth ...` и зарегистрированного токена до записи в файл и окно, шапка с версией/VCS-ревизией, ОС, архитектурой и путями, строка `[log] файл: ...` при старте. Тесты: `TestWriteFormat`, `TestWriteMultiline`, `TestRedactOAuth`, `TestRedactSecretValue`, `TestRotate`, `TestRotateReplacesBackup`, `TestOpenFallback`, `TestOpenAllFail`, `TestConcurrentWrites`, `TestLogWritesFile`, `TestStartupLogsFilePath`, `TestLogRedactsToken`.
 
 ### Исправлено
 - `fallback-reason-and-album-ids`: `DownloadTrack` сохраняет причину отказа lossless (`quality`, `codec`, `bitrate` из `/get-file-info`) в `Result.FallbackReason`, пишет её в строку `[fallback MP3: ...]` и отдельной строкой `[fallback]` для плейлистов и альбомов; ID из JSON (`any`) форматируются helper'ом `idString` (`ids.go`), поэтому `float64` больше не попадает в теги в экспоненциальной записи (`track.go`, `playlist.go`). Тесты: `TestIDString`, `TestLosslessFallbackReason`, `TestJobCallbacksLogFallbackReason`, обновлён `TestFormatEvent`.

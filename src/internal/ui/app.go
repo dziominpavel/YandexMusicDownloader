@@ -10,12 +10,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"yamdl/internal/applog"
 	"yamdl/internal/config"
 	"yamdl/internal/downloader"
 	"yamdl/internal/library"
@@ -62,6 +64,22 @@ type App struct {
 	envPath string
 	// cfg is the last applied configuration; source for GetSettings.
 	cfg config.Config
+	// logFile is the diagnostic file log; nil means file logging is off.
+	logFile *applog.Logger
+	// logFileErr explains why file logging is off (nil when it works).
+	logFileErr error
+}
+
+// SetLogFile attaches the diagnostic file log. Called by main before the
+// window starts; nil keeps logging in the window only.
+func (a *App) SetLogFile(l *applog.Logger) {
+	a.logFile = l
+}
+
+// SetLogFileError remembers why the diagnostic log could not be opened,
+// so Startup can tell the user in the window.
+func (a *App) SetLogFileError(err error) {
+	a.logFileErr = err
 }
 
 // NewApp loads config and prepares the downloader.
@@ -93,6 +111,7 @@ func NewApp() *App {
 // lines land in a.ready/a.readyNote for the caller to log.
 func (a *App) apply(cfg config.Config) {
 	a.cfg = cfg
+	a.addLogSecret(cfg.Token)
 	a.ready = ""
 	a.readyNote = ""
 	a.outputDir = "./downloads"
@@ -151,9 +170,100 @@ func (a *App) setupLibrary(envPath, libraryDir string) {
 	a.index = library.New(cachePath, libraryDir, a.outputDir)
 }
 
+// addLogSecret tells the file logger to hide token in every message.
+// Called from apply, so a hot-reloaded token is covered too.
+func (a *App) addLogSecret(token string) {
+	if a.logFile == nil {
+		return
+	}
+	a.logFile.AddSecret(token)
+}
+
+// writeLogHeader writes the build and path block at the top of every
+// run. It bypasses a.log on purpose: the header belongs to the file only.
+func (a *App) writeLogHeader() {
+	if a.logFile == nil {
+		return
+	}
+	exe := ""
+	if p, err := os.Executable(); err == nil {
+		exe = p
+	}
+	env := a.envPath
+	if env == "" {
+		env = "(не найден)"
+	}
+	lines := []string{
+		"запуск: " + buildSummary(),
+		"система: " + goruntime.GOOS + "/" + goruntime.GOARCH,
+		"exe: " + exe,
+		".env: " + env,
+		"загрузки: " + a.outputDir,
+		"лог: " + a.logFile.Path(),
+	}
+	for _, line := range lines {
+		_ = a.logFile.Write(line, "info")
+	}
+}
+
+// logFileLine tells the user where the diagnostic file is, or why it is
+// off. The line goes to both sinks through the regular log path.
+func (a *App) logFileLine() {
+	switch {
+	case a.logFile != nil:
+		a.log("[log] файл: "+a.logFile.Path(), "info")
+	case a.logFileErr != nil:
+		a.log("[log] файл: отключён — "+a.logFileErr.Error(), "info")
+	default:
+		a.log("[log] файл: отключён", "info")
+	}
+}
+
+// buildSummary describes the running binary: module version, VCS
+// revision and Go version. Missing build info degrades to "unknown".
+func buildSummary() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "версия: unknown"
+	}
+	version := info.Main.Version
+	if version == "" {
+		version = "unknown"
+	}
+	parts := []string{"версия: " + version}
+	var rev, at string
+	modified := false
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.time":
+			at = s.Value
+		case "vcs.modified":
+			modified = s.Value == "true"
+		}
+	}
+	if rev != "" {
+		if len(rev) > 12 {
+			rev = rev[:12]
+		}
+		parts = append(parts, "ревизия: "+rev)
+	}
+	if at != "" {
+		parts = append(parts, "время: "+at)
+	}
+	if rev != "" {
+		parts = append(parts, fmt.Sprintf("изменено: %t", modified))
+	}
+	parts = append(parts, "go: "+goruntime.Version())
+	return strings.Join(parts, ", ")
+}
+
 // Startup is called by Wails when the window is ready.
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
+	a.writeLogHeader()
+	a.logFileLine()
 	a.log(a.ready, "info")
 	if a.readyNote != "" {
 		a.log(a.readyNote, "info")
@@ -221,9 +331,15 @@ func windowSizeUpdate(lastW, lastH, w, h int) map[string]string {
 	}
 }
 
+// log sends one line to the diagnostic file and the window. Secrets are
+// redacted before both sinks: a screenshot of the window is safe too.
 func (a *App) log(text, kind string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.logFile != nil {
+		text = a.logFile.Redact(text)
+		_ = a.logFile.Write(text, kind)
+	}
 	if a.logSink != nil {
 		a.logSink(text, kind)
 		return

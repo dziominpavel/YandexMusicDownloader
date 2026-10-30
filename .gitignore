@@ -26,6 +26,10 @@ dist/
 # runtime: кэш индекса коллекции (создаётся рядом с exe при запуске)
 library-index.json
 
+# runtime: диагностический лог (создаётся рядом с exe при запуске)
+app.log
+app.log.1
+
 # ide
 .vscode/
 .idea/

@@ -9,15 +9,26 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 
 	"yamdl/frontend"
+	"yamdl/internal/applog"
 	"yamdl/internal/ui"
 )
 
 func main() {
+	// Open the diagnostic log before anything else, so startup errors
+	// found before the window exists still reach the file.
+	appLog, logErr := applog.OpenDefault(applog.MaxBytes)
+	app := ui.NewApp()
+	if logErr != nil {
+		app.SetLogFileError(logErr)
+	} else {
+		defer appLog.Close()
+		app.SetLogFile(appLog)
+	}
+
 	assets, err := frontend.Assets()
 	if err != nil {
-		log.Fatal(err)
+		fatal(appLog, "assets: "+err.Error(), err)
 	}
-	app := ui.NewApp()
 	width, height := app.InitialSize()
 	if err := wails.Run(&options.App{
 		Title:  "YandexMusicDownloader",
@@ -30,6 +41,15 @@ func main() {
 		OnBeforeClose: app.BeforeClose,
 		Bind:          []any{app},
 	}); err != nil {
-		log.Fatal(err)
+		fatal(appLog, "wails: "+err.Error(), err)
 	}
+}
+
+// fatal writes the last error to the diagnostic log (when open) and then
+// exits; the window may not exist yet.
+func fatal(l *applog.Logger, msg string, err error) {
+	if l != nil {
+		_ = l.Write(msg, "error")
+	}
+	log.Fatal(err)
 }
