@@ -60,6 +60,7 @@ type fileInfoPayload struct {
 
 // losslessInfo is a parsed get-file-info answer.
 type losslessInfo struct {
+	Quality string
 	Codec   string
 	URLs    []string
 	Key     string
@@ -92,7 +93,43 @@ func parseLosslessInfo(body []byte) (losslessInfo, error) {
 	if p == nil {
 		return losslessInfo{}, ErrNoFLAC
 	}
-	return losslessInfo{Codec: p.Codec, URLs: p.URLs, Key: p.Key, Bitrate: p.Bitrate}, nil
+	return losslessInfo{Quality: p.Quality, Codec: p.Codec, URLs: p.URLs, Key: p.Key, Bitrate: p.Bitrate}, nil
+}
+
+// noFLACError records what the API actually offered instead of FLAC.
+// It unwraps to ErrNoFLAC, so the fallback path stays unchanged.
+type noFLACError struct {
+	Quality string
+	Codec   string
+	Bitrate int
+}
+
+func (e *noFLACError) Error() string {
+	if offered := e.offered(); offered != "" {
+		return ErrNoFLAC.Error() + ": " + offered
+	}
+	return ErrNoFLAC.Error()
+}
+
+func (e *noFLACError) Unwrap() error { return ErrNoFLAC }
+
+// offered renders the server answer as "nq/aac-mp4 (192 kbps)".
+func (e *noFLACError) offered() string {
+	var parts []string
+	if e.Quality != "" {
+		parts = append(parts, e.Quality)
+	}
+	if e.Codec != "" {
+		parts = append(parts, e.Codec)
+	}
+	s := strings.Join(parts, "/")
+	if e.Bitrate > 0 {
+		if s != "" {
+			s += " "
+		}
+		s += fmt.Sprintf("(%d kbps)", e.Bitrate)
+	}
+	return s
 }
 
 // isFLACCodec reports containers we save as lossless.
@@ -160,7 +197,7 @@ func (c *Client) losslessFileInfo(trackID string, uid int64) (losslessInfo, erro
 		return losslessInfo{}, err
 	}
 	if !isFLACCodec(info.Codec) {
-		return losslessInfo{}, fmt.Errorf("%w: codec %q", ErrNoFLAC, info.Codec)
+		return losslessInfo{}, &noFLACError{Quality: info.Quality, Codec: info.Codec, Bitrate: info.Bitrate}
 	}
 	if len(info.URLs) == 0 {
 		return losslessInfo{}, fmt.Errorf("%w: no urls", ErrNoFLAC)
@@ -175,6 +212,8 @@ type Result struct {
 	Fallback  bool   // true when MP3 was used instead of lossless
 	Converted bool   // true when ALAC-in-M4A was converted to FLAC via ffmpeg
 	Label     string // "Artist — Title" for logs
+	// FallbackReason explains why lossless was abandoned (MP3 only).
+	FallbackReason string
 }
 
 // Download fetches a track in the best available quality:
@@ -211,7 +250,7 @@ func (c *Client) DownloadTrack(track *Track, outputDir string, emit func(Event),
 			if res.Path != "" && c.OnPublished != nil {
 				c.OnPublished(res.Path)
 			}
-			emitEvent(emit, Event{Kind: KindDone, Label: label, TrackID: tid, Format: res.Format, Fallback: res.Fallback, Converted: res.Converted, Path: res.Path})
+			emitEvent(emit, Event{Kind: KindDone, Label: label, TrackID: tid, Format: res.Format, Fallback: res.Fallback, FallbackReason: res.FallbackReason, Converted: res.Converted, Path: res.Path})
 		case errors.Is(err, ErrAlreadyExists):
 			emitEvent(emit, Event{Kind: KindSkipped, Label: label, TrackID: tid, Detail: res.Path})
 		case errors.Is(err, ErrStopped) || c.Stopped():
@@ -222,11 +261,15 @@ func (c *Client) DownloadTrack(track *Track, outputDir string, emit func(Event),
 		}
 	}()
 
-	if uid, uerr := c.accountUID(); uerr == nil {
-		if res, lerr := c.downloadLossless(track, outputDir, uid, onProgress); lerr == nil || errors.Is(lerr, ErrAlreadyExists) {
-			return res, lerr
-		}
-		// Any other lossless failure falls back to MP3 below.
+	var fallbackReason string
+	if uid, uerr := c.accountUID(); uerr != nil {
+		fallbackReason = "не удалось проверить аккаунт: " + uerr.Error()
+	} else if res, lerr := c.downloadLossless(track, outputDir, uid, onProgress); lerr == nil || errors.Is(lerr, ErrAlreadyExists) {
+		return res, lerr
+	} else {
+		// Any other lossless failure falls back to MP3 below. Keep the
+		// reason: without it the log looks like a silent quality downgrade.
+		fallbackReason = losslessFallbackReason(lerr)
 	}
 	if c.Stopped() {
 		return Result{}, ErrStopped
@@ -235,12 +278,32 @@ func (c *Client) DownloadTrack(track *Track, outputDir string, emit func(Event),
 	path, err := c.downloadMP3Track(track, outputDir, nil, onProgress) // events emitted by outer defer
 	if err != nil {
 		if errors.Is(err, ErrAlreadyExists) {
-			return Result{Path: path, Format: "MP3", Fallback: true}, err
+			return Result{Path: path, Format: "MP3", Fallback: true, FallbackReason: fallbackReason}, err
 		}
 		return Result{}, err
 	}
 	// MP3 after a lossless attempt (or without uid) is a fallback.
-	return Result{Path: path, Format: "MP3", Fallback: true}, nil
+	return Result{Path: path, Format: "MP3", Fallback: true, FallbackReason: fallbackReason}, nil
+}
+
+// losslessFallbackReason turns a lossless failure into one short line for
+// the log. It never returns "" for a non-nil error, so a fallback can
+// never look like an unexplained quality drop.
+func losslessFallbackReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	var noFLAC *noFLACError
+	if errors.As(err, &noFLAC) {
+		if offered := noFLAC.offered(); offered != "" {
+			return "Яндекс вернул " + offered + " вместо FLAC"
+		}
+		return "Яндекс не вернул FLAC"
+	}
+	if errors.Is(err, ErrNoFLAC) {
+		return "Яндекс не вернул FLAC"
+	}
+	return "ошибка lossless: " + err.Error()
 }
 
 // downloadLossless streams, decrypts, tags and publishes a lossless file.

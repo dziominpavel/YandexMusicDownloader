@@ -18,13 +18,15 @@ const (
 
 // Event is one lifecycle fact the UI renders as a log line.
 type Event struct {
-	Kind      EventKind
-	Label     string // "Artist — Title"
-	TrackID   string // stable key; the UI updates one row per TrackID
-	Detail    string // error text or extra info
-	Format    string // "FLAC", "M4A", "MP3" (for KindDone)
-	Fallback  bool   // true when MP3 was used instead of lossless
-	Converted bool   // true when ALAC-in-M4A was converted to FLAC
+	Kind     EventKind
+	Label    string // "Artist — Title"
+	TrackID  string // stable key; the UI updates one row per TrackID
+	Detail   string // error text or extra info
+	Format   string // "FLAC", "M4A", "MP3" (for KindDone)
+	Fallback bool   // true when MP3 was used instead of lossless
+	// FallbackReason explains why lossless was abandoned (KindDone, MP3).
+	FallbackReason string
+	Converted      bool // true when ALAC-in-M4A was converted to FLAC
 	// Path is the published file for KindDone (m3u export uses it).
 	Path string
 }

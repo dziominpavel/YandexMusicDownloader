@@ -61,10 +61,10 @@ func mapPlaylist(data playlistResult) *Playlist {
 	// считает что-то другое и для длины не используется.
 	p.Total = data.Result.TrackCount
 	for _, e := range data.Result.Tracks {
-		t := &Track{ID: fmt.Sprint(e.ID)}
+		t := &Track{ID: idString(e.ID)}
 		in := e.Track
-		if fmt.Sprint(in.ID) != "" && fmt.Sprint(in.ID) != "<nil>" {
-			t.ID = fmt.Sprint(in.ID)
+		if inner := idString(in.ID); inner != "" {
+			t.ID = inner
 		}
 		t.Title = in.Title
 		t.Version = in.Version
@@ -76,7 +76,7 @@ func mapPlaylist(data playlistResult) *Playlist {
 		if len(in.Albums) > 0 {
 			a := in.Albums[0]
 			t.Album = a.Title
-			t.AlbumID = fmt.Sprint(a.ID)
+			t.AlbumID = idString(a.ID)
 			if a.Year > 0 {
 				t.Year = fmt.Sprintf("%d", a.Year)
 			}
@@ -152,17 +152,17 @@ func (c *Client) Album(id string) (*Playlist, error) {
 	p.Total = data.Result.TrackCount
 	for _, vol := range data.Result.Volumes {
 		for _, in := range vol {
-			t := &Track{ID: fmt.Sprint(in.ID), Title: in.Title, Version: in.Version, Available: in.Available, CoverURI: in.CoverURI}
+			t := &Track{ID: idString(in.ID), Title: in.Title, Version: in.Version, Available: in.Available, CoverURI: in.CoverURI}
 			for _, a := range in.Artists {
 				t.Artists = append(t.Artists, a.Name)
 			}
 			if len(in.Albums) > 0 {
 				a := in.Albums[0]
 				t.Album = a.Title
-				if fmt.Sprint(a.ID) != "" {
-					t.AlbumID = fmt.Sprint(a.ID)
-				} else if fmt.Sprint(data.Result.ID) != "" {
-					t.AlbumID = fmt.Sprint(data.Result.ID)
+				if albumID := idString(a.ID); albumID != "" {
+					t.AlbumID = albumID
+				} else if albumID := idString(data.Result.ID); albumID != "" {
+					t.AlbumID = albumID
 				}
 				if a.Year > 0 {
 					t.Year = fmt.Sprintf("%d", a.Year)
@@ -173,8 +173,8 @@ func (c *Client) Album(id string) (*Playlist, error) {
 					t.TrackTotal = a.TrackCnt
 				}
 				t.DiscNum = a.Position.Volume
-			} else if fmt.Sprint(data.Result.ID) != "" {
-				t.AlbumID = fmt.Sprint(data.Result.ID)
+			} else if albumID := idString(data.Result.ID); albumID != "" {
+				t.AlbumID = albumID
 				t.Album = data.Result.Title
 			}
 			p.Tracks = append(p.Tracks, t)

@@ -260,7 +260,11 @@ func formatEvent(e downloader.Event) (string, string) {
 	case downloader.KindDone:
 		s := "[done] " + e.Label + " (" + e.Format + ")"
 		if e.Fallback {
-			s += " [fallback MP3]"
+			s += " [fallback MP3"
+			if e.FallbackReason != "" {
+				s += ": " + e.FallbackReason
+			}
+			s += "]"
 		}
 		if e.Converted {
 			s += " [ALAC→FLAC]"
@@ -616,13 +620,17 @@ func (a *App) fetchPlaylistUUID(uuid string) (*downloader.Playlist, error) {
 	return a.client.Playlist(uuid)
 }
 
-// jobCallbacks is the shared event/progress wiring for every job: one
-// row status per track, byte counters forwarded to the frontend. Used by
-// both the single-track path and the playlist pool.
+// jobCallbacks is the shared event/progress wiring for every batch job:
+// one row status per track, a fallback reason line when lossless was
+// unavailable, and byte counters forwarded to the frontend. Single-track
+// downloads use their own callback (formatEvent writes the full line).
 func (a *App) jobCallbacks() (func(downloader.Event), downloader.ProgressFunc) {
 	emit := func(e downloader.Event) {
 		status, kind := formatTrackStatus(e)
 		a.trackStatus(e.TrackID, status, kind)
+		if e.Kind == downloader.KindDone && e.Fallback && e.FallbackReason != "" {
+			a.log("[fallback] "+e.Label+": "+e.FallbackReason, "info")
+		}
 	}
 	return emit, func(p downloader.Progress) { a.progress(p) }
 }

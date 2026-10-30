@@ -5,6 +5,13 @@
 
 ## [Unreleased]
 
+**Исправлено**
+- В логе видно, почему вместо FLAC скачался MP3: показывается качество, кодек и битрейт, которые вернул Яндекс.
+- Ссылка на источник в тегах содержит обычный номер альбома, без записи вида 6.73558e+06.
+
+### Исправлено
+- `fallback-reason-and-album-ids`: `DownloadTrack` сохраняет причину отказа lossless (`quality`, `codec`, `bitrate` из `/get-file-info`) в `Result.FallbackReason`, пишет её в строку `[fallback MP3: ...]` и отдельной строкой `[fallback]` для плейлистов и альбомов; ID из JSON (`any`) форматируются helper'ом `idString` (`ids.go`), поэтому `float64` больше не попадает в теги в экспоненциальной записи (`track.go`, `playlist.go`). Тесты: `TestIDString`, `TestLosslessFallbackReason`, `TestJobCallbacksLogFallbackReason`, обновлён `TestFormatEvent`.
+
 ## [0.3.0] — 2026-10-28 (MINOR)
 
 **Добавлено**

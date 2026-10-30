@@ -257,14 +257,14 @@ func (c *Client) TrackInfo(id string) (*Track, error) {
 		return nil, fmt.Errorf("downloader: track %s not found", id)
 	}
 	r := data.Result[0]
-	t := &Track{ID: fmt.Sprint(r.ID), Title: r.Title, Version: r.Version, Available: r.Available, CoverURI: r.CoverURI}
+	t := &Track{ID: idString(r.ID), Title: r.Title, Version: r.Version, Available: r.Available, CoverURI: r.CoverURI}
 	for _, a := range r.Artists {
 		t.Artists = append(t.Artists, a.Name)
 	}
 	if len(r.Albums) > 0 {
 		a := r.Albums[0]
 		t.Album = a.Title
-		t.AlbumID = fmt.Sprint(a.ID)
+		t.AlbumID = idString(a.ID)
 		if a.Year > 0 {
 			t.Year = fmt.Sprintf("%d", a.Year)
 		}

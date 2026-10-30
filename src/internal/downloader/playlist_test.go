@@ -7,7 +7,7 @@ import (
 
 func TestMapPlaylist(t *testing.T) {
 	body := `{"result":{"title":"Мой плейлист","trackCount":3,"tracks":[
-		{"id":"11","track":{"id":11,"title":"T1","artists":[{"name":"A1"}],"available":true,"coverUri":"cover1","albums":[{"id":100,"title":"Alb","year":2020,"genre":"rock","trackCount":10,"trackPosition":{"volume":1,"index":2}}]}},
+		{"id":"11","track":{"id":11,"title":"T1","artists":[{"name":"A1"}],"available":true,"coverUri":"cover1","albums":[{"id":6735580,"title":"Alb","year":2020,"genre":"rock","trackCount":10,"trackPosition":{"volume":1,"index":2}}]}},
 		{"id":"22","track":{"id":22,"title":"T2","version":"live","artists":[{"name":"A2"},{"name":"A3"}],"available":false,"albums":[]}},
 		{"id":"33","track":{}}
 	]}}`
@@ -23,7 +23,7 @@ func TestMapPlaylist(t *testing.T) {
 		t.Fatalf("tracks = %d", len(p.Tracks))
 	}
 	t1 := p.Tracks[0]
-	if t1.ID != "11" || t1.Title != "T1" || !t1.Available || len(t1.Artists) != 1 || t1.Album != "Alb" || t1.TrackNum != 2 || t1.TrackTotal != 10 {
+	if t1.ID != "11" || t1.Title != "T1" || !t1.Available || len(t1.Artists) != 1 || t1.Album != "Alb" || t1.AlbumID != "6735580" || t1.TrackNum != 2 || t1.TrackTotal != 10 {
 		t.Fatalf("t1 = %+v", t1)
 	}
 	if p.Tracks[1].Available {

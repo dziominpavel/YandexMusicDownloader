@@ -331,3 +331,24 @@ func TestBusyAroundDownload(t *testing.T) {
 		t.Error("busy must be cleared after a failed download")
 	}
 }
+
+// --- fallback reason must reach the log for batch jobs too ---
+
+func TestJobCallbacksLogFallbackReason(t *testing.T) {
+	var logs []string
+	a := &App{logSink: func(text, kind string) { logs = append(logs, text) }}
+	emit, _ := a.jobCallbacks()
+	emit(downloader.Event{
+		Kind: downloader.KindDone, TrackID: "1", Label: "A — T",
+		Format: "MP3", Fallback: true,
+		FallbackReason: "Яндекс вернул nq/aac-mp4 (192 kbps) вместо FLAC",
+	})
+	if len(logs) != 1 {
+		t.Fatalf("want one fallback log line, got %v", logs)
+	}
+	for _, want := range []string{"[fallback]", "A — T", "nq/aac-mp4", "192 kbps"} {
+		if !strings.Contains(logs[0], want) {
+			t.Errorf("log %q lacks %q", logs[0], want)
+		}
+	}
+}

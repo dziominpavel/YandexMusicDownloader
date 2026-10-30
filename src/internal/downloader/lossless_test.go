@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -43,9 +45,36 @@ func TestParseLosslessInfoVariants(t *testing.T) {
 		if len(info.URLs) != 1 {
 			t.Fatalf("case %d: urls %+v", i, info)
 		}
+		if info.Quality != "lossless" {
+			t.Fatalf("case %d: quality %q", i, info.Quality)
+		}
 	}
 	if _, err := parseLosslessInfo([]byte(`{"result":{}}`)); err == nil {
 		t.Fatal("empty payload must fail")
+	}
+}
+
+func TestLosslessFallbackReason(t *testing.T) {
+	noFLAC := &noFLACError{Quality: "nq", Codec: "aac-mp4", Bitrate: 192}
+	if !errors.Is(noFLAC, ErrNoFLAC) {
+		t.Fatal("noFLACError must unwrap to ErrNoFLAC")
+	}
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"server offered aac", noFLAC, "Яндекс вернул nq/aac-mp4 (192 kbps) вместо FLAC"},
+		{"no urls", fmt.Errorf("%w: no urls", ErrNoFLAC), "Яндекс не вернул FLAC"},
+		{"network", fmt.Errorf("downloader: GET file: http 403"), "ошибка lossless: downloader: GET file: http 403"},
+	}
+	for _, c := range cases {
+		if got := losslessFallbackReason(c.err); got != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
+	}
+	if got := losslessFallbackReason(nil); got != "" {
+		t.Errorf("nil error: got %q", got)
 	}
 }
 

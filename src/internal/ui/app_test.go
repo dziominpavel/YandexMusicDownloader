@@ -34,6 +34,7 @@ func TestFormatEvent(t *testing.T) {
 		{downloader.Event{Kind: downloader.KindDownloading, Label: "A — T"}, "[downloading] A — T", "info"},
 		{downloader.Event{Kind: downloader.KindDone, Label: "A — T", Format: "FLAC"}, "[done] A — T (FLAC)", "done"},
 		{downloader.Event{Kind: downloader.KindDone, Label: "A — T", Format: "MP3", Fallback: true}, "[done] A — T (MP3) [fallback MP3]", "done"},
+		{downloader.Event{Kind: downloader.KindDone, Label: "A — T", Format: "MP3", Fallback: true, FallbackReason: "Яндекс вернул nq/aac-mp4 (192 kbps) вместо FLAC"}, "[done] A — T (MP3) [fallback MP3: Яндекс вернул nq/aac-mp4 (192 kbps) вместо FLAC]", "done"},
 		{downloader.Event{Kind: downloader.KindDone, Label: "A — T", Format: "FLAC", Converted: true}, "[done] A — T (FLAC) [ALAC→FLAC]", "done"},
 		{downloader.Event{Kind: downloader.KindSkipped, Label: "A — T"}, "[skip] A — T (already exists)", "info"},
 		{downloader.Event{Kind: downloader.KindSkipped, Label: "A — T", Detail: downloader.SkipDuplicate}, "[skip] A — T (duplicate)", "info"},
