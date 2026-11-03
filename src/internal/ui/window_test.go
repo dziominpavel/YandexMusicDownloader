@@ -9,6 +9,16 @@ import (
 	"yamdl/internal/config"
 )
 
+func TestMinWindowSize(t *testing.T) {
+	if MinWindowWidth != 860 || MinWindowHeight != 600 {
+		t.Fatalf("min window size = %dx%d, want 860x600", MinWindowWidth, MinWindowHeight)
+	}
+	if DefaultWindowWidth < MinWindowWidth || DefaultWindowHeight < MinWindowHeight {
+		t.Fatalf("default window %dx%d is smaller than min %dx%d",
+			DefaultWindowWidth, DefaultWindowHeight, MinWindowWidth, MinWindowHeight)
+	}
+}
+
 func TestInitialSize(t *testing.T) {
 	cases := []struct {
 		name string

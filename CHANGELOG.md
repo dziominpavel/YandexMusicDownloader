@@ -17,6 +17,9 @@
 
 **Изменено**
 - **BREAKING:** история последних ссылок убрана: поле ввода больше не перекрывает лог выпадающим списком.
+- Новый тёмный интерфейс Warm Vinyl: заметная кнопка скачивания, понятные состояния загрузки и компактный список треков.
+- Настройки разбиты на секции в две колонки, сохранение всегда на виду, а случайное закрытие с изменениями просит подтверждение.
+- Ошибки теперь видны рядом с полем ввода, лог убран в «Подробности», а exe получил иконку и версию.
 
 ### Добавлено
 - `add-flac-quality-monitor`: новая capability `quality-upgrade` и параметр `FLAC_MONITOR` (по умолчанию false): проверка MP3 из `LIBRARY_DIR` и `OUTPUT_DIR` по Yandex ID или поиску `artist + title`, журнал `flac-quality.json` с TTL и сбросом по аккаунту/Плюсу, окно сводки/списка с чекбоксами, статус последней проверки в главном окне и настройках. Обновление идёт через `downloader.Upgrade`: lossless → ALAC→FLAC при `flac-mp4` → теги → атомарная публикация рядом со старым MP3 → старый файл в `<корень>\_old\<относительный путь>`; при fallback/ошибке старый файл не перемещается. Индекс хранит `TrackID`/`SourceURL`, поднят `cacheVersion` до 2, каталоги `_old` исключены. Новые пакеты `internal/tagread` и `internal/quality`; тесты `internal/{config,library,downloader,quality,ui}`. Документация: `.env.example`, `docs/15-flac-monitor.md`.
@@ -29,6 +32,7 @@
 
 ### Изменено
 - `remove-link-history`: из `src/frontend/dist/index.html` удалены `datalist`, `list="linkHistory"` и JS-блок истории (`HISTORY_KEY`, `loadHistory`, `renderHistory`, `rememberLink`, вызов при старте скачивания); требование `track-download` обновлено, README и `tests/statusbar_check.js` поправлены. Проверки: `node tests/statusbar_check.js`, `go test ./...`, `go vet ./...`, `go build ./...`, `openspec validate remove-link-history --type change`, `openspec validate --specs`.
+- `redesign-ui`: фронтенд разделён на `src/frontend/dist/{index.html,app.css,app.js}`; добавлена визуальная система Warm Vinyl, state machine `idle/preview/active/done/error`, список треков с человекочитаемыми статусами и форматами, итоговая карточка, inline-ошибка/повтор, свёрнутый лог «Подробности», SVG-иконки, ARIA/focus trap/reduced motion, двухколоночные настройки с dirty guard. Wails получил `MinWidth/MinHeight 860×600`, тёмный `BackgroundColour` и `Windows.Theme`; `scripts/build-windows.ps1` генерирует иконку/версию/PerMonitorV2-манифест через `go-winres`, добавлены `assets/icon.ico` и `assets/winres/`. Тесты: `node tests/statusbar_check.js`, `node tests/settings_check.js`, `go test ./...`, `go vet ./...`, `go build ./...`, `openspec validate --all`.
 
 ## [0.3.0] — 2026-10-28 (MINOR)
 

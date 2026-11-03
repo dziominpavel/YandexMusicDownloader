@@ -336,6 +336,8 @@ func (a *App) Startup(ctx context.Context) {
 const (
 	DefaultWindowWidth  = 950
 	DefaultWindowHeight = 634
+	MinWindowWidth      = 860
+	MinWindowHeight     = 600
 )
 
 // InitialSize returns the size the window must open with: the last

@@ -7,6 +7,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/windows"
 
 	"yamdl/frontend"
 	"yamdl/internal/applog"
@@ -31,9 +32,13 @@ func main() {
 	}
 	width, height := app.InitialSize()
 	if err := wails.Run(&options.App{
-		Title:  "YandexMusicDownloader",
-		Width:  width,
-		Height: height,
+		Title:            "YandexMusicDownloader",
+		Width:            width,
+		Height:           height,
+		MinWidth:         ui.MinWindowWidth,
+		MinHeight:        ui.MinWindowHeight,
+		BackgroundColour: &options.RGBA{R: 18, G: 16, B: 15, A: 255},
+		Windows:          &windows.Options{Theme: windows.Dark},
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

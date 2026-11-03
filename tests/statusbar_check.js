@@ -3,8 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'frontend', 'dist', 'index.html'), 'utf8');
-const script = /<script>([\s\S]*?)<\/script>/.exec(html)[1];
+const script = fs.readFileSync(path.join(__dirname, '..', 'src', 'frontend', 'dist', 'app.js'), 'utf8');
 
 // --- Минимальный DOM-стуб ---
 function makeEl(tag) {
@@ -112,6 +111,16 @@ function check(name, cond, extra) {
 console.log('scenario: autofocus on load');
 check('поле ссылки в фокусе', document.activeElement === registry['link'],
   document.activeElement && document.activeElement.id);
+check('статусбар скрыт до первой загрузки', registry['statusbar'].hidden === true,
+  String(registry['statusbar'].hidden));
+
+console.log('scenario: human-readable track status');
+const parsedDone = ctx.window.__yamdl.parseTrackStatus('[done] (FLAC)');
+check('done -> Готово - FLAC', parsedDone.label === 'Готово - FLAC' && parsedDone.format === 'FLAC', JSON.stringify(parsedDone));
+const parsedSkip = ctx.window.__yamdl.parseTrackStatus('[skip] (duplicate)');
+check('skip -> Пропущено - дубль', parsedSkip.label === 'Пропущено - дубль', JSON.stringify(parsedSkip));
+const parsedError = ctx.window.__yamdl.parseTrackStatus('[error] boom');
+check('error -> Ошибка: boom', parsedError.label === 'Ошибка: boom', JSON.stringify(parsedError));
 
 // --- Сценарий 1: плейлист 20 треков, 10 done + 2 активных по 50% ---
 console.log('scenario: playlist 20 tracks');
@@ -205,20 +214,21 @@ check('ширина полосы = 50%', s.width === '50%', s.width);
   window.go.ui.App.Stop = () => { stopCalls++; return Promise.resolve(); };
 
   const dl = registry['dl'];
+  const dlLabel = registry['dlLabel'];
   const linkInput = registry['link'];
   linkInput.value = 'https://music.yandex.ru/track/1';
   const running = dl.onclick();
-  check('кнопка = ■ Остановить', dl.classList.contains('stop') && dl.textContent === '■ Остановить', dl.textContent);
+  check('кнопка = Остановить', dl.classList.contains('stop') && dlLabel.textContent === 'Остановить', dlLabel.textContent);
   check('⚙ заблокирован на время job\'ы', registry['settingsBtn'].disabled === true);
 
   const stopping = dl.onclick();
-  check('кнопка = Останавливаю…', dl.textContent === 'Останавливаю…' && dl.disabled === true, dl.textContent);
+  check('кнопка = Останавливаю…', dlLabel.textContent === 'Останавливаю…' && dl.disabled === true, dlLabel.textContent);
   check('Stop вызван ровно один раз', stopCalls === 1, String(stopCalls));
 
   resolveDownload('[stopped] прервано пользователем');
   await running;
   await stopping;
-  check('кнопка вернулась в «Скачать»', !dl.classList.contains('stop') && dl.textContent === 'Скачать' && !dl.disabled, dl.textContent);
+  check('кнопка вернулась в «Скачать»', !dl.classList.contains('stop') && dlLabel.textContent === 'Скачать' && !dl.disabled, dlLabel.textContent);
   check('⚙ разблокирован', registry['settingsBtn'].disabled === false);
   check('фокус вернулся в поле после job-end', document.activeElement === linkInput,
     document.activeElement && document.activeElement.id);
@@ -243,7 +253,7 @@ check('ширина полосы = 50%', s.width === '50%', s.width);
   check('Download вызван один раз', enterCalls.length === 1, String(enterCalls.length));
   check('Download получил ссылку', enterCalls[0] === enterLink, enterCalls[0]);
   check('поле очищено после старта', linkInput.value === '', linkInput.value);
-  check('кнопка = ■ Остановить', dl.classList.contains('stop'), dl.textContent);
+  check('кнопка = Остановить', dl.classList.contains('stop') && dlLabel.textContent === 'Остановить', dlLabel.textContent);
 
   // --- Сценарий 9: Enter при busy ничего не делает ---
   console.log('scenario: Enter while busy is ignored');
@@ -256,7 +266,7 @@ check('ширина полосы = 50%', s.width === '50%', s.width);
 
   resolveEnterDownload('');
   await new Promise((r) => setTimeout(r, 0));
-  check('после job-end кнопка = «Скачать»', dl.textContent === 'Скачать' && !dl.disabled, dl.textContent);
+  check('после job-end кнопка = «Скачать»', dlLabel.textContent === 'Скачать' && !dl.disabled, dlLabel.textContent);
   check('после job-end фокус в поле', document.activeElement === linkInput,
     document.activeElement && document.activeElement.id);
 
@@ -284,18 +294,30 @@ check('ширина полосы = 50%', s.width === '50%', s.width);
     filePath: 'C:\\Music\\Artist - Track.flac',
     differentFormat: false,
   });
-  check('фокус в окне дубля', document.activeElement === registry['dupYes'],
+  check('фокус в окне дубля', document.activeElement === registry['dupNo'],
     document.activeElement && document.activeElement.id);
-  await ctx.answerDup(false);
+  await ctx.window.__yamdl.answerDup(false);
   check('после ответа фокус в поле', document.activeElement === linkInput,
     document.activeElement && document.activeElement.id);
 
   // --- Сценарий 13: фокус возвращается после закрытия настроек ---
   console.log('scenario: focus returns after settings');
   document.activeElement = registry['dl'];
-  ctx.closeSettings();
+  ctx.window.__yamdl.closeSettings(true);
   check('после настроек фокус в поле', document.activeElement === linkInput,
     document.activeElement && document.activeElement.id);
+
+  // --- Сценарий 14: inline-ошибка, повтор и свёрнутый лог ---
+  console.log('scenario: inline error and retry');
+  window.go.ui.App.Download = async () => '[error] boom';
+  linkInput.value = 'https://music.yandex.ru/track/error';
+  await ctx.window.__yamdl.startDownload();
+  check('inline-ошибка видна', registry['errorBanner'].hidden === false);
+  check('текст ошибки на месте', registry['errorText'].textContent.includes('boom'),
+    registry['errorText'].textContent);
+  check('кнопка повтора видна', registry['retryBtn'].hidden === false);
+  check('лог свёрнут по умолчанию', !registry['details'].open);
+  check('бейдж ошибок виден', registry['logBadge'].hidden === false);
 
   process.exit(failures ? 1 : 0);
 })();

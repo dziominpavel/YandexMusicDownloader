@@ -2,1112 +2,324 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>YandexMusicDownloader</title>
-<style>
-  body { font-family: Segoe UI, sans-serif; margin: 16px; background: #1e1e1e; color: #ddd; }
-  /* Шапка: название слева, шестерёнка-настройки справа на одном уровне */
-  #head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  #head h2 { margin: 0; }
-  #settingsBtn, #openFolderBtn { padding: 6px 10px; font-size: 18px; line-height: 1; background: #2d2d2d; color: #ddd; border: 1px solid #3c3c3c; border-radius: 4px; cursor: pointer; }
-  #settingsBtn:hover, #openFolderBtn:hover { background: #3a3a3a; }
-  #settingsBtn:disabled, #openFolderBtn:disabled { cursor: wait; opacity: 0.6; }
-  #headActions { display: flex; gap: 8px; align-items: center; }
-  /* Мониторинг FLAC: кнопка, бейдж найденного и компактная дата проверки. */
-  #qualityBox { display: flex; align-items: center; gap: 7px; min-width: 0; }
-  #qualityBtn { position: relative; padding: 6px 10px; font-size: 13px; line-height: 1.1; background: #2d2d2d; color: #ddd; border: 1px solid #3c3c3c; border-radius: 4px; cursor: pointer; }
-  #qualityBtn:hover:not(:disabled) { background: #3a3a3a; }
-  #qualityBtn:disabled { cursor: wait; opacity: 0.6; }
-  #qualityBadge { position: absolute; top: -7px; right: -7px; min-width: 17px; height: 17px; padding: 0 4px; box-sizing: border-box; border-radius: 9px; background: #b3261e; color: #fff; font-size: 11px; line-height: 17px; text-align: center; }
-  #qualityBadge[hidden] { display: none; }
-  #qualityStatus { max-width: 270px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #aaa; }
-  #sQualityStatus { margin-top: 6px; font-size: 12px; color: #aaa; white-space: normal; }
-  /* Окно найденного: сводка, список с чекбоксами, «Позже»/«Скачать». */
-  #qualityOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40; }
-  #qualityOverlay.open { display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; }
-  #qualityCard { background: #252526; border: 1px solid #3c3c3c; border-radius: 6px; padding: 18px 20px; width: 640px; max-width: 94vw; max-height: 88vh; overflow-y: auto; box-sizing: border-box; }
-  #qualityCard h3 { margin: 0 0 10px; font-size: 16px; }
-  #qualitySummary { margin: 0 0 10px; font-size: 13px; color: #ddd; line-height: 1.45; }
-  #qualityList { margin: 4px 0 10px; max-height: 48vh; overflow-y: auto; border-top: 1px solid #3c3c3c; }
-  #qualityList[hidden] { display: none; }
-  .qrow { display: flex; gap: 8px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid #333; }
-  .qrow input { margin-top: 3px; flex: none; }
-  .qmain { flex: 1; min-width: 0; }
-  .qname { font-size: 13px; color: #eee; overflow-wrap: anywhere; }
-  .qmeta { font-size: 12px; color: #aaa; margin-top: 2px; overflow-wrap: anywhere; }
-  .qmatch { font-size: 12px; color: #79c0ff; margin-top: 2px; overflow-wrap: anywhere; }
-  #qualityError { color: #ff7b72; font-size: 13px; min-height: 16px; white-space: pre-wrap; }
-  #sCheckNow { padding: 7px 12px; font-size: 13px; cursor: pointer; }
-  /* Один grid на строку ввода + статусбар (1fr auto):
-     полоса идёт строго под полем ввода, процент — по центру под «Скачать». */
-  #row { display: grid; grid-template-columns: 1fr auto; gap: 14px 8px; margin-top: 14px; }
-  #link { padding: 8px; font-size: 14px; min-width: 0; }
-  #link.drop { outline: 2px solid #79c0ff; outline-offset: 1px; }
-  #dl { padding: 8px 20px; font-size: 14px; cursor: pointer; }
-  #dl:disabled { cursor: wait; opacity: 0.6; }
-  /* На время скачивания та же кнопка становится «■ Остановить». */
-  #dl.stop { background: #b3261e; color: #fff; border: 1px solid #ff7b72; }
-  #dl.stop:hover:not(:disabled) { background: #c93a2e; }
-
-  #statusbar { display: contents; font-family: Consolas, monospace; font-size: 13px; }
-  #sbfillwrap { position: relative; height: 12px; background: #333; overflow: hidden; }
-  #sbfill { height: 100%; width: 0%; background: #79c0ff; transition: width .15s linear; }
-  #sbfill.done { background: #7ee787; }
-  #sbfill.err { background: #ff7b72; }
-  #sbfill.stopped { background: #e3b341; }
-  /* Счётчики — поверх правого края самой полосы, не занимают места в сетке. */
-  #sbmeta { position: absolute; inset: 0 6px; display: flex; align-items: center; justify-content: flex-end; gap: 10px; font-size: 11px; color: #eee; text-shadow: 0 1px 2px rgba(0,0,0,.9); }
-  #sbcount:empty, #sbbytes:empty { display: none; }
-  #sbpct { min-width: 40px; text-align: center; }
-
-  #log { margin-top: 12px; white-space: pre-wrap; font-family: Consolas, monospace; font-size: 13px; }
-  .done { color: #7ee787; } .err { color: #ff7b72; } .info { color: #79c0ff; } .stopped { color: #e3b341; }
-  #prog { margin-top: 8px; font-family: Consolas, monospace; font-size: 13px; }
-  .prow { margin: 2px 0; }
-  .pbar { display: inline-block; width: 160px; height: 8px; background: #333; vertical-align: middle; margin: 0 8px; }
-  .pfill { height: 100%; background: #79c0ff; width: 0%; }
-  /* Компактный предпросмотр вставленной ссылки: не мешает кнопке «Скачать». */
-  #preview { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
-  #preview[hidden] { display: none; }
-  #previewCover { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; background: #333; }
-  #previewText { min-width: 0; }
-  #previewTitle { font-size: 14px; color: #eee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #previewSub { font-size: 12px; color: #aaa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-  #tracks { margin-top: 8px; font-family: Consolas, monospace; font-size: 13px; }
-  .thead { color: #ddd; margin: 4px 0; }
-  .trow { display: flex; gap: 8px; align-items: center; margin: 2px 0; }
-  .tname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tbar { display: inline-block; width: 120px; height: 8px; background: #333; flex: none; }
-  .tfill { display: block; height: 100%; background: #79c0ff; width: 0%; }
-  .tstat { flex: none; min-width: 170px; }
-
-  /* Окно настроек: overlay-модалка поверх главного окна */
-  #settingsOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 10; }
-  #settingsOverlay.open { display: flex; align-items: center; justify-content: center; }
-  #settingsCard { background: #252526; border: 1px solid #3c3c3c; border-radius: 6px; padding: 18px 20px; width: 440px; max-width: 92vw; max-height: 90vh; overflow-y: auto; }
-  #settingsCard h3 { margin: 0 0 14px; font-size: 16px; }
-  .sfield { margin-bottom: 12px; }
-  .sfield label { display: block; font-size: 13px; color: #aaa; margin-bottom: 4px; }
-  .sline { display: flex; gap: 6px; }
-  .sline input[type=text], .sline input[type=password], .sline input[type=number] { flex: 1; min-width: 0; padding: 7px; font-size: 13px; background: #1e1e1e; color: #ddd; border: 1px solid #3c3c3c; border-radius: 3px; }
-  .sline input:disabled { opacity: 0.45; }
-  .sline button { padding: 7px 12px; font-size: 13px; cursor: pointer; }
-  .sline button:disabled { opacity: 0.45; cursor: default; }
-  .scheck { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 8px; }
-  .scheck input { width: 15px; height: 15px; }
-  /* Степпер воркеров: поле под двузначное число, кнопки −/+ справа от него */
-  .stepper { align-items: stretch; justify-content: flex-start; }
-  .stepper input { width: 64px; flex: none; text-align: center; font-size: 15px; }
-  .stepper button { min-width: 44px; font-size: 18px; line-height: 1; background: #333; color: #ddd; border: 1px solid #3c3c3c; border-radius: 3px; }
-  .stepper button:hover { background: #3d3d3d; }
-  .stepper input::-webkit-outer-spin-button,
-  .stepper input::-webkit-inner-spin-button { -webkit-appearance: none; display: none; margin: 0; }
-  .stepper input { -moz-appearance: textfield; -webkit-appearance: textfield; appearance: textfield; }
-  #tokenCheck { font-size: 12px; min-height: 16px; margin-top: 4px; }
-  #tokenHelpRow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 3px; font-size: 12px; }
-  #tokenHelpLink { padding: 0; background: none; border: 0; color: #79c0ff; font: inherit; text-decoration: underline; cursor: pointer; }
-  #tokenHelpLink:hover { color: #a5d6ff; }
-  #tokenHelpLink:focus-visible { outline: 1px solid #79c0ff; outline-offset: 2px; }
-  #tokenHint { color: #e3b341; }
-  #tokenHint[hidden] { display: none; }
-  /* Справка по токену — второй overlay поверх настроек */
-  #tokenHelpOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 20; }
-  #tokenHelpOverlay.open { display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; }
-  #tokenHelpCard { background: #252526; border: 1px solid #3c3c3c; border-radius: 6px; padding: 18px 20px; width: 520px; max-width: 92vw; max-height: 90vh; overflow-y: auto; box-sizing: border-box; }
-  #tokenHelpCard h3 { margin: 0 0 10px; font-size: 16px; }
-  #tokenHelpCard p { margin: 8px 0; font-size: 13px; line-height: 1.45; }
-  #tokenHelpCard ol { margin: 8px 0 8px 20px; padding: 0; font-size: 13px; line-height: 1.45; }
-  #tokenHelpCard li { margin: 6px 0; }
-  #tokenHelpCard code { font-family: Consolas, monospace; background: #1e1e1e; padding: 1px 4px; border-radius: 3px; }
-  .token-help-note { color: #aaa; font-size: 12px !important; }
-  .token-help-warn { color: #e3b341; border-left: 3px solid #e3b341; padding-left: 10px; }
-  #tokenHelpCard .sbuttons { justify-content: space-between; }
-  #settingsError { color: #ff7b72; font-size: 13px; min-height: 16px; margin-top: 6px; white-space: pre-wrap; }
-  .sbuttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
-  .sbuttons button { padding: 7px 16px; font-size: 14px; cursor: pointer; }
-
-  /* Окно возможного дубля: имя найденного файла отдельно, полный путь
-     переносится по любому символу и остаётся видимым целиком. */
-  #dupOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 30; }
-  #dupOverlay.open { display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; }
-  #dupCard { background: #252526; border: 1px solid #3c3c3c; border-radius: 6px; padding: 18px 20px; width: 560px; max-width: 92vw; max-height: 90vh; overflow-y: auto; box-sizing: border-box; }
-  #dupCard h3 { margin: 0 0 10px; font-size: 16px; }
-  .dupLead { margin: 0 0 14px; font-size: 13px; color: #aaa; line-height: 1.4; }
-  .dupBlock { margin-bottom: 12px; }
-  .dupLabel { display: block; font-size: 12px; color: #aaa; margin-bottom: 3px; }
-  .dupName { font-size: 14px; color: #eee; font-weight: 600; overflow-wrap: anywhere; user-select: text; }
-  .dupPath { margin-top: 3px; font-family: Consolas, monospace; font-size: 12px; color: #79c0ff; overflow-wrap: anywhere; word-break: break-all; user-select: text; }
-  .dupWarn { margin: 2px 0 0; color: #e3b341; font-size: 13px; line-height: 1.4; }
-</style>
+<link rel="stylesheet" href="app.css">
 </head>
-<body>
-<div id="head">
-  <h2>YandexMusicDownloader</h2>
-  <div id="headActions">
-    <div id="qualityBox">
-      <button id="qualityBtn" title="Проверить наличие FLAC">FLAC<span id="qualityBadge" hidden>0</span></button>
-      <span id="qualityStatus" title="Проверок ещё не было">FLAC: проверок не было</span>
-    </div>
-    <button id="openFolderBtn" title="Открыть папку загрузок">📂</button>
-    <button id="settingsBtn" title="Настройки">⚙</button>
-  </div>
-</div>
-<div id="row">
-  <input id="link" placeholder="Вставь ссылку на трек, альбом или плейлист. Можно несколько через пробел/перенос строки">
-  <button id="dl">Скачать</button>
-  <div id="statusbar">
-    <div id="sbfillwrap">
-      <div id="sbfill"></div>
-      <div id="sbmeta"><span id="sbcount"></span><span id="sbbytes"></span></div>
-    </div>
-    <span id="sbpct">0%</span>
-  </div>
-</div>
-<div id="preview" hidden>
-  <img id="previewCover" alt="">
-  <div id="previewText">
-    <div id="previewTitle"></div>
-    <div id="previewSub"></div>
-  </div>
-</div>
-<div id="tracks"></div>
-<div id="prog"></div>
-<div id="log"></div>
+<body data-state="idle">
+<svg class="svg-sprite" aria-hidden="true" focusable="false">
+  <symbol id="icon-vinyl" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></symbol>
+  <symbol id="icon-flac" viewBox="0 0 24 24"><path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></symbol>
+  <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="icon-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></symbol>
+  <symbol id="icon-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+  <symbol id="icon-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="icon-clipboard" viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></symbol>
+  <symbol id="icon-download" viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></symbol>
+  <symbol id="icon-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+  <symbol id="icon-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="icon-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="icon-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></symbol>
+  <symbol id="icon-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5"/></symbol>
+  <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 8a8 8 0 0 1 13.2 1M4.7 15a8 8 0 0 0 13.2 1"/></symbol>
+</svg>
 
-<div id="settingsOverlay">
-  <div id="settingsCard">
-    <h3>Настройки</h3>
-    <div class="sfield">
-      <label for="sToken">Токен Яндекс</label>
-      <div class="sline">
-        <input type="password" id="sToken" placeholder="OAuth-токен">
-        <button id="sCheck">Проверить</button>
+<div class="app-shell">
+  <header class="app-header">
+    <div class="brand" aria-label="Yandex Music Downloader">
+      <span class="brand-mark" aria-hidden="true"><svg class="icon"><use href="#icon-vinyl"/></svg></span>
+      <span class="brand-text"><span class="brand-title">Yandex Music</span><span class="brand-sub">Downloader</span></span>
+    </div>
+    <div class="header-actions">
+      <div class="quality-wrap">
+        <button id="qualityBtn" class="btn btn-ghost icon-btn quality-btn" type="button" aria-label="Проверить наличие FLAC" title="Проверить наличие FLAC">
+          <svg class="icon" aria-hidden="true"><use href="#icon-flac"/></svg>
+          <span class="btn-label">FLAC</span>
+          <span id="qualityBadge" class="badge badge-accent" hidden>0</span>
+        </button>
+        <span id="qualityStatus" class="quality-status" hidden></span>
       </div>
-      <div id="tokenCheck"></div>
-      <div id="tokenHelpRow">
-        <button type="button" id="tokenHelpLink">Как получить токен?</button>
-        <span id="tokenHint" hidden>Без токена доступно только 30-секундное превью</span>
+      <button id="openFolderBtn" class="btn btn-ghost icon-btn" type="button" aria-label="Открыть папку загрузок" title="Открыть папку загрузок">
+        <svg class="icon" aria-hidden="true"><use href="#icon-folder"/></svg>
+      </button>
+      <button id="settingsBtn" class="btn btn-ghost icon-btn" type="button" aria-label="Настройки" title="Настройки">
+        <svg class="icon" aria-hidden="true"><use href="#icon-settings"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="app-main">
+    <section id="composer" class="composer card" aria-labelledby="composerTitle">
+      <div class="composer-head">
+        <div>
+          <h1 id="composerTitle" class="composer-title">Что скачать?</h1>
+          <p id="composerSub" class="composer-sub">Вставьте ссылку на трек, альбом или плейлист</p>
+        </div>
+        <span id="multiHint" class="multi-hint" hidden></span>
+      </div>
+      <div class="link-row">
+        <div class="input-wrap">
+          <svg class="input-icon" aria-hidden="true"><use href="#icon-link"/></svg>
+          <input id="link" type="text" autocomplete="off" spellcheck="false" placeholder="https://music.yandex.ru/..." aria-label="Ссылка на трек, альбом или плейлист">
+          <button id="clearBtn" class="input-action" type="button" aria-label="Очистить поле" title="Очистить" hidden><svg class="icon" aria-hidden="true"><use href="#icon-x"/></svg></button>
+        </div>
+        <button id="pasteBtn" class="btn btn-secondary" type="button">
+          <svg class="icon" aria-hidden="true"><use href="#icon-clipboard"/></svg>
+          <span>Вставить</span>
+        </button>
+        <button id="dl" class="btn btn-primary btn-download" type="button">
+          <svg class="icon" aria-hidden="true"><use id="dlIconUse" href="#icon-download"/></svg>
+          <span id="dlLabel">Скачать</span>
+        </button>
+      </div>
+      <p id="composerHint" class="composer-hint">Можно несколько ссылок через пробел или перенос строки. FLAC, если доступен, иначе MP3.</p>
+    </section>
+
+    <section id="preview" class="preview card" hidden aria-live="polite">
+      <div id="previewSkeleton" class="preview-skeleton" hidden>
+        <span class="skeleton skeleton-cover"></span>
+        <span class="skeleton-lines"><span class="skeleton skeleton-line"></span><span class="skeleton skeleton-line short"></span></span>
+      </div>
+      <div id="previewContent" class="preview-content">
+        <span class="cover-wrap">
+          <img id="previewCover" alt="">
+          <span id="previewCoverFallback" class="cover-fallback" aria-hidden="true"><svg class="icon"><use href="#icon-vinyl"/></svg></span>
+        </span>
+        <div class="preview-text">
+          <span id="previewKind" class="type-pill"></span>
+          <h2 id="previewTitle"></h2>
+          <p id="previewSub"></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="jobHead" class="job-head" hidden>
+      <div class="job-head-text">
+        <h2 id="jobTitle"></h2>
+        <p id="jobSubtitle"></p>
+      </div>
+    </section>
+
+    <div id="bgBanner" class="banner banner-info" hidden>
+      <svg class="icon" aria-hidden="true"><use href="#icon-refresh"/></svg>
+      <span id="bgBannerText">Фоновое обновление FLAC</span>
+    </div>
+
+    <div id="errorBanner" class="banner banner-error" role="alert" aria-live="assertive" hidden>
+      <svg class="icon" aria-hidden="true"><use href="#icon-alert"/></svg>
+      <div class="banner-copy"><strong>Не удалось скачать</strong><p id="errorText"></p></div>
+      <div class="banner-actions">
+        <button id="retryBtn" class="btn btn-secondary btn-sm" type="button">Повторить</button>
+        <button id="errorClose" class="btn btn-ghost btn-sm" type="button">Закрыть</button>
       </div>
     </div>
-    <div class="sfield">
-      <label for="sLibrary">Папка коллекции (пусто — проверка дублей выключена)</label>
-      <div class="sline">
-        <input type="text" id="sLibrary">
-        <button id="sLibraryPick">Обзор</button>
+
+    <div id="statusbar" class="statusbar card" hidden>
+      <div class="statusbar-top">
+        <span id="sbcount" class="status-count"></span>
+        <span id="sbbytes" class="status-bytes"></span>
+        <span id="sbpct" class="status-pct">0%</span>
+      </div>
+      <div id="sbfillwrap" class="status-track" role="progressbar" aria-label="Прогресс загрузки" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div id="sbfill" class="status-fill"></div>
       </div>
     </div>
-    <div class="scheck">
-      <input type="checkbox" id="sDiffOutput">
-      <label for="sDiffOutput">Папка загрузок отличается от папки коллекции</label>
-    </div>
-    <div class="sfield">
-      <label for="sOutput">Папка загрузок</label>
-      <div class="sline">
-        <input type="text" id="sOutput" disabled>
-        <button id="sOutputPick" disabled>Обзор</button>
+
+    <section id="summary" class="summary card" hidden aria-live="polite">
+      <span class="summary-icon" aria-hidden="true"><svg class="icon"><use id="summaryIconUse" href="#icon-check"/></svg></span>
+      <div class="summary-main">
+        <h2 id="summaryTitle"></h2>
+        <p id="summaryText"></p>
+        <p id="summaryDetails" class="summary-details"></p>
       </div>
-    </div>
-    <div class="sfield">
-      <label for="sWorkers">Параллельных скачиваний (1..10)</label>
-      <div class="sline stepper">
-        <input type="text" inputmode="numeric" id="sWorkers" value="3">
-        <button type="button" id="sMinus" title="Меньше">−</button>
-        <button type="button" id="sPlus" title="Больше">+</button>
+      <div class="summary-actions">
+        <button id="summaryOpen" class="btn btn-secondary btn-sm" type="button">Открыть папку</button>
+        <button id="summaryAgain" class="btn btn-primary btn-sm" type="button">Скачать ещё</button>
       </div>
-    </div>
-    <div class="scheck"><input type="checkbox" id="sConvert"><label for="sConvert">ALAC/M4A → FLAC (через ffmpeg.exe)</label></div>
-    <div class="scheck"><input type="checkbox" id="sEmbedCover"><label for="sEmbedCover">Встраивать обложку (текстовые теги пишутся)</label></div>
-    <div class="scheck"><input type="checkbox" id="sEmbedLyrics"><label for="sEmbedLyrics">Встраивать текст песни в тег</label></div>
-    <div class="scheck"><input type="checkbox" id="sSaveLrc"><label for="sSaveLrc">Сохранять синхронизированную лирику .lrc рядом</label></div>
-    <div class="scheck"><input type="checkbox" id="sSubdirs"><label for="sSubdirs">Создавать подпапки по шаблону</label></div>
-    <div class="sfield">
-      <label for="sSubdirTemplate">Шаблон подпапок</label>
-      <div class="sline">
-        <input type="text" id="sSubdirTemplate" placeholder="Исполнитель/Альбом/">
+    </section>
+
+    <section id="tracksSection" class="track-section card" hidden>
+      <div class="section-head"><h2>Треки</h2><span id="trackSummary" class="section-meta"></span></div>
+      <div id="tracks" class="track-list"></div>
+    </section>
+
+    <details id="details" class="details card">
+      <summary class="details-summary">
+        <span>Подробности</span>
+        <span id="logBadge" class="badge badge-danger" hidden>0</span>
+        <svg class="icon chevron" aria-hidden="true"><use href="#icon-chevron"/></svg>
+      </summary>
+      <div class="details-tools">
+        <button id="logCopy" class="btn btn-ghost btn-sm" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-copy"/></svg>Копировать</button>
+        <button id="logClear" class="btn btn-ghost btn-sm" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-trash"/></svg>Очистить</button>
       </div>
+      <div id="log" class="log" aria-live="polite"></div>
+    </details>
+    <span id="progressAnnounce" class="sr-only" aria-live="polite"></span>
+  </main>
+</div>
+
+<div id="dropOverlay" class="drop-overlay" hidden>
+  <div class="drop-card"><svg class="icon" aria-hidden="true"><use href="#icon-download"/></svg><strong>Отпустите, чтобы вставить ссылку</strong></div>
+</div>
+
+<div id="settingsOverlay" class="overlay" aria-hidden="true">
+  <div id="settingsCard" class="modal modal-settings" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" tabindex="-1">
+    <header class="modal-head">
+      <h2 id="settingsTitle">Настройки</h2>
+      <button id="settingsClose" class="btn btn-ghost icon-btn" type="button" aria-label="Закрыть настройки" title="Закрыть"><svg class="icon" aria-hidden="true"><use href="#icon-x"/></svg></button>
+    </header>
+    <div id="settingsBody" class="modal-body settings-grid">
+      <section class="settings-section">
+        <h3>Аккаунт</h3>
+        <div class="field">
+          <label for="sToken">Токен Яндекс</label>
+          <div class="input-row">
+            <input type="password" id="sToken" placeholder="OAuth-токен" autocomplete="off">
+            <button id="sCheck" class="btn btn-secondary btn-sm" type="button">Проверить</button>
+          </div>
+          <p id="tokenCheck" class="form-hint" aria-live="polite"></p>
+          <div id="tokenHelpRow" class="inline-actions">
+            <button type="button" id="tokenHelpLink" class="link-btn">Как получить токен?</button>
+            <span id="tokenHint" class="hint warn" hidden>Без токена доступно только 30-секундное превью</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h3>Папки</h3>
+        <div class="field">
+          <label for="sLibrary">Папка коллекции</label>
+          <p class="help">Где лежит ваша музыка. Нужна для проверки дублей и FLAC-мониторинга.</p>
+          <div class="input-row">
+            <input type="text" id="sLibrary" placeholder="C:\Music">
+            <button id="sLibraryPick" class="btn btn-secondary btn-sm" type="button">Обзор</button>
+          </div>
+        </div>
+        <label class="checkbox-row"><input type="checkbox" id="sDiffOutput"><span>Папка загрузок отличается от папки коллекции</span></label>
+        <div class="field">
+          <label for="sOutput">Папка загрузок</label>
+          <p class="help">Куда сохранять скачанные файлы. По умолчанию совпадает с коллекцией.</p>
+          <div class="input-row">
+            <input type="text" id="sOutput" disabled>
+            <button id="sOutputPick" class="btn btn-secondary btn-sm" type="button" disabled>Обзор</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h3>Производительность</h3>
+        <div class="field">
+          <label for="sWorkers">Параллельных скачиваний (1..10)</label>
+          <p class="help">Сколько треков качать одновременно. 3 — оптимально.</p>
+          <div class="stepper">
+            <button type="button" id="sMinus" class="btn btn-secondary" title="Меньше" aria-label="Меньше">−</button>
+            <input type="text" inputmode="numeric" id="sWorkers" value="3">
+            <button type="button" id="sPlus" class="btn btn-secondary" title="Больше" aria-label="Больше">+</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h3>Качество</h3>
+        <label class="checkbox-row"><input type="checkbox" id="sConvert"><span>ALAC/M4A → FLAC (через ffmpeg.exe)</span></label>
+      </section>
+
+      <section class="settings-section">
+        <h3>Теги</h3>
+        <label class="checkbox-row"><input type="checkbox" id="sEmbedCover"><span>Встраивать обложку</span></label>
+        <label class="checkbox-row"><input type="checkbox" id="sEmbedLyrics"><span>Встраивать текст песни в тег</span></label>
+        <label class="checkbox-row"><input type="checkbox" id="sSaveLrc"><span>Сохранять синхронизированную лирику .lrc рядом</span></label>
+      </section>
+
+      <section class="settings-section">
+        <h3>Подпапки и экспорт</h3>
+        <label class="checkbox-row"><input type="checkbox" id="sSubdirs"><span>Создавать подпапки по шаблону</span></label>
+        <div class="field">
+          <label for="sSubdirTemplate">Шаблон подпапок</label>
+          <div class="input-row">
+            <input type="text" id="sSubdirTemplate" placeholder="%artist%/%album%">
+          </div>
+          <p class="help">Пример: Music/Muse/Absolution/01 - Hysteria.flac</p>
+        </div>
+        <label class="checkbox-row"><input type="checkbox" id="sExportM3u"><span>Экспортировать плейлист/альбом в .m3u</span></label>
+      </section>
+
+      <section class="settings-section settings-section-wide">
+        <h3>Мониторинг FLAC</h3>
+        <label class="checkbox-row"><input type="checkbox" id="sFlacMonitor"><span>Проверять наличие FLAC автоматически</span></label>
+        <div class="inline-actions">
+          <button type="button" id="sCheckNow" class="btn btn-secondary btn-sm">Проверить сейчас</button>
+          <span id="sQualityStatus" class="help">FLAC: проверок не было</span>
+        </div>
+      </section>
     </div>
-    <div class="scheck"><input type="checkbox" id="sExportM3u"><label for="sExportM3u">Экспортировать плейлист/альбом в .m3u</label></div>
-    <div class="sfield">
-      <label>Мониторинг FLAC</label>
-      <div class="scheck"><input type="checkbox" id="sFlacMonitor"><label for="sFlacMonitor">Проверять наличие FLAC автоматически</label></div>
-      <div class="sline"><button type="button" id="sCheckNow">Проверить сейчас</button></div>
-      <div id="sQualityStatus">FLAC: проверок не было</div>
-    </div>
-    <div id="settingsError"></div>
-    <div class="sbuttons">
-      <button id="sCancel">Отмена</button>
-      <button id="sSave">Сохранить</button>
-    </div>
+    <footer class="modal-footer">
+      <div id="settingsError" class="form-error" role="alert" aria-live="assertive"></div>
+      <div class="footer-actions">
+        <button id="sCancel" class="btn btn-ghost" type="button">Отмена</button>
+        <button id="sSave" class="btn btn-primary" type="button">Сохранить</button>
+      </div>
+    </footer>
   </div>
 </div>
 
-<div id="tokenHelpOverlay" aria-hidden="true">
-  <div id="tokenHelpCard" role="dialog" aria-modal="true" aria-labelledby="tokenHelpTitle" tabindex="-1">
-    <h3 id="tokenHelpTitle">Как получить токен</h3>
-    <p>Токен — это ключ доступа к вашему аккаунту Яндекса. С ним приложение скачивает полные треки, без него доступны только 30-секундные превью.</p>
-    <ol>
-      <li>Нажмите «Открыть страницу OAuth» — откроется официальный сайт Яндекса.</li>
-      <li>Войдите в аккаунт и разрешите доступ приложению.</li>
-      <li>После возврата на music.yandex.ru скопируйте из адресной строки только значение после <code>access_token=</code> до следующего <code>&amp;</code>. Без <code>access_token=</code>, пробелов и кавычек.</li>
-      <li>Вставьте токен в поле «Токен Яндекс», нажмите «Проверить», затем «Сохранить».</li>
-    </ol>
-    <p class="token-help-note">Если страница мигнула и адресная строка очистилась: откройте OAuth-ссылку в окне инкогнито или нажмите <code>Ctrl+L</code>, затем сразу <code>Ctrl+C</code>.</p>
-    <p class="token-help-warn">Токен действует как пароль. Никому его не передавайте, не публикуйте и не показывайте скриншоты адресной строки с токеном.</p>
-    <div class="sbuttons">
-      <button type="button" id="tokenHelpOAuth">Открыть страницу OAuth</button>
-      <button type="button" id="tokenHelpClose">Понятно</button>
+<div id="tokenHelpOverlay" class="overlay" aria-hidden="true">
+  <div id="tokenHelpCard" class="modal modal-help" role="dialog" aria-modal="true" aria-labelledby="tokenHelpTitle" tabindex="-1">
+    <header class="modal-head"><h2 id="tokenHelpTitle">Как получить токен</h2><button id="tokenHelpClose" class="btn btn-ghost icon-btn" type="button" aria-label="Закрыть справку" title="Закрыть"><svg class="icon" aria-hidden="true"><use href="#icon-x"/></svg></button></header>
+    <div class="modal-body">
+      <p>Токен — это ключ доступа к вашему аккаунту Яндекса. С ним приложение скачивает полные треки, без него доступны только 30-секундные превью.</p>
+      <ol class="help-list">
+        <li>Нажмите «Открыть страницу OAuth» — откроется официальный сайт Яндекса.</li>
+        <li>Войдите в аккаунт и разрешите доступ приложению.</li>
+        <li>После возврата на music.yandex.ru скопируйте из адресной строки только значение после <code>access_token=</code> до следующего <code>&amp;</code>. Без <code>access_token=</code>, пробелов и кавычек.</li>
+        <li>Вставьте токен в поле «Токен Яндекс», нажмите «Проверить», затем «Сохранить».</li>
+      </ol>
+      <p class="help">Если страница мигнула и адресная строка очистилась: откройте OAuth-ссылку в окне инкогнито или нажмите <code>Ctrl+L</code>, затем сразу <code>Ctrl+C</code>.</p>
+      <p class="help warn">Токен действует как пароль. Никому его не передавайте, не публикуйте и не показывайте скриншоты адресной строки с токеном.</p>
     </div>
+    <footer class="modal-footer"><div class="footer-actions"><button type="button" id="tokenHelpOAuth" class="btn btn-secondary">Открыть страницу OAuth</button><button type="button" id="tokenHelpCloseFooter" class="btn btn-primary">Понятно</button></div></footer>
   </div>
 </div>
 
-<div id="dupOverlay" aria-hidden="true">
-  <div id="dupCard" role="dialog" aria-modal="true" aria-labelledby="dupTitle" tabindex="-1">
-    <h3 id="dupTitle">Возможен дубль — <span id="dupPercent"></span></h3>
-    <p class="dupLead">Похожий файл уже есть в коллекции. Проверьте, тот ли это трек.</p>
-    <div class="dupBlock">
-      <span class="dupLabel">Сейчас скачивается</span>
-      <div class="dupName" id="dupTrack"></div>
+<div id="dupOverlay" class="overlay" aria-hidden="true">
+  <div id="dupCard" class="modal modal-dup" role="dialog" aria-modal="true" aria-labelledby="dupTitle" tabindex="-1">
+    <header class="modal-head"><h2 id="dupTitle">Возможен дубль — <span id="dupPercent"></span></h2></header>
+    <div class="modal-body">
+      <p class="help">Похожий файл уже есть в коллекции. Проверьте, тот ли это трек.</p>
+      <div class="dup-block"><span class="dup-label">Сейчас скачивается</span><div class="dup-name" id="dupTrack"></div></div>
+      <div class="dup-block"><span class="dup-label">Похожий файл в коллекции</span><div class="dup-name" id="dupMatchName"></div><div class="dup-path" id="dupMatchPath"></div></div>
+      <p class="help warn" id="dupFormat" hidden></p>
     </div>
-    <div class="dupBlock">
-      <span class="dupLabel">Похожий файл в коллекции</span>
-      <div class="dupName" id="dupMatchName"></div>
-      <div class="dupPath" id="dupMatchPath"></div>
-    </div>
-    <p class="dupWarn" id="dupFormat" hidden></p>
-    <div class="sbuttons">
-      <button type="button" id="dupNo">Отмена</button>
-      <button type="button" id="dupYes">Скачать всё равно</button>
-    </div>
+    <footer class="modal-footer"><div class="footer-actions"><button type="button" id="dupNo" class="btn btn-secondary">Отмена</button><button type="button" id="dupYes" class="btn btn-danger">Скачать всё равно</button></div></footer>
   </div>
 </div>
 
-<div id="qualityOverlay" aria-hidden="true">
-  <div id="qualityCard" role="dialog" aria-modal="true" aria-labelledby="qualityTitle" tabindex="-1">
-    <h3 id="qualityTitle">Найдены треки в лучшем качестве</h3>
-    <p id="qualitySummary"></p>
-    <div id="qualityList" hidden></div>
-    <div id="qualityError"></div>
-    <div class="sbuttons">
-      <button type="button" id="qualityShowList">Показать список</button>
-      <button type="button" id="qualityLater">Позже</button>
-      <button type="button" id="qualityDownload">Скачать все</button>
+<div id="qualityOverlay" class="overlay" aria-hidden="true">
+  <div id="qualityCard" class="modal modal-quality" role="dialog" aria-modal="true" aria-labelledby="qualityTitle" tabindex="-1">
+    <header class="modal-head"><h2 id="qualityTitle">Найдены треки в лучшем качестве</h2><button type="button" id="qualityClose" class="btn btn-ghost icon-btn" aria-label="Закрыть" title="Закрыть"><svg class="icon" aria-hidden="true"><use href="#icon-x"/></svg></button></header>
+    <div class="modal-body">
+      <p id="qualitySummary" class="help"></p>
+      <div id="qualityList" class="quality-list" hidden></div>
+      <div id="qualityError" class="form-error" role="alert"></div>
     </div>
+    <footer class="modal-footer"><div class="footer-actions">
+      <button type="button" id="qualityShowList" class="btn btn-ghost">Показать список</button>
+      <button type="button" id="qualityLater" class="btn btn-secondary">Позже</button>
+      <button type="button" id="qualityDownload" class="btn btn-primary">Скачать все</button>
+    </div></footer>
   </div>
 </div>
 
-<script>
-  const log = document.getElementById('log');
-  const prog = document.getElementById('prog');
-  const tracks = document.getElementById('tracks');
-  const btn = document.getElementById('dl');
-  const settingsBtn = document.getElementById('settingsBtn');
-  const input = document.getElementById('link');
-  const statusbar = document.getElementById('statusbar');
-  const sbfill = document.getElementById('sbfill');
-  const sbpct = document.getElementById('sbpct');
-  const sbcount = document.getElementById('sbcount');
-  const sbbytes = document.getElementById('sbbytes');
-  const rows = {};
-  const trows = {};
-  function line(text, cls) {
-    const div = document.createElement('div');
-    if (cls) div.className = cls;
-    div.textContent = text;
-    log.appendChild(div);
-  }
-  function fmtMB(b) { return (b / 1048576).toFixed(1); }
+<div id="confirmOverlay" class="overlay" aria-hidden="true">
+  <div id="confirmCard" class="modal modal-confirm" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" tabindex="-1">
+    <header class="modal-head"><h2 id="confirmTitle">Закрыть настройки?</h2></header>
+    <div class="modal-body"><p id="confirmText" class="help">Изменения не сохранены.</p></div>
+    <footer class="modal-footer"><div class="footer-actions"><button type="button" id="confirmCancel" class="btn btn-secondary">Остаться</button><button type="button" id="confirmOk" class="btn btn-danger">Закрыть без сохранения</button></div></footer>
+  </div>
+</div>
 
-  // --- Мониторинг FLAC: кнопка, статус, окно найденного ---
-  const qualityBtn = document.getElementById('qualityBtn');
-  const qualityBadge = document.getElementById('qualityBadge');
-  const qualityStatus = document.getElementById('qualityStatus');
-  const qualityOverlay = document.getElementById('qualityOverlay');
-  const qualitySummary = document.getElementById('qualitySummary');
-  const qualityList = document.getElementById('qualityList');
-  const qualityError = document.getElementById('qualityError');
-  const qualityShowList = document.getElementById('qualityShowList');
-  const qualityLater = document.getElementById('qualityLater');
-  const qualityDownload = document.getElementById('qualityDownload');
-  let qualityItems = [];
-  let qualityListOpen = false;
-  let qualityChecking = false;
-
-  function updateQualityBadge(n) {
-    if (n > 0) { qualityBadge.hidden = false; qualityBadge.textContent = String(n); }
-    else { qualityBadge.hidden = true; qualityBadge.textContent = '0'; }
-    qualityBtn.title = n > 0 ? 'Обновить FLAC (' + n + ')' : 'Проверить наличие FLAC';
-  }
-
-  function qualityRow(it) {
-    const row = document.createElement('label');
-    row.className = 'qrow';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = !!it.selected;
-    cb.dataset.key = it.key;
-    const main = document.createElement('span');
-    main.className = 'qmain';
-    const name = document.createElement('div');
-    name.className = 'qname';
-    name.textContent = it.label || it.fileName || it.path;
-    const meta = document.createElement('div');
-    meta.className = 'qmeta';
-    meta.textContent = it.alreadyFlac
-      ? 'MP3 → _old (FLAC уже есть)'
-      : 'MP3 → ' + (it.foundFormat || 'FLAC');
-    main.appendChild(name);
-    main.appendChild(meta);
-    if (it.matchSource === 'search') {
-      const match = document.createElement('div');
-      match.className = 'qmatch';
-      const bits = [];
-      if (it.matchedArtist) bits.push(it.matchedArtist);
-      if (it.matchedTitle) bits.push(it.matchedTitle);
-      let text = 'Найдено по названию: ' + bits.join(' — ');
-      if (it.album) text += ' · ' + it.album;
-      if (it.year) text += ' (' + it.year + ')';
-      if (it.confidence) text += ' · ' + it.confidence + '%';
-      match.textContent = text;
-      main.appendChild(match);
-    }
-    row.appendChild(cb);
-    row.appendChild(main);
-    return row;
-  }
-
-  function renderQualityList() {
-    qualityList.innerHTML = '';
-    qualityItems.forEach((it) => qualityList.appendChild(qualityRow(it)));
-  }
-
-  function updateQualitySummary() {
-    const ids = qualityItems.filter((x) => x.matchSource === 'id' || x.alreadyFlac).length;
-    const searches = qualityItems.length - ids;
-    let text = 'Найдено ' + qualityItems.length + ' трек' +
-      (qualityItems.length === 1 ? '' : 'ов') + ' в лучшем качестве.';
-    if (searches > 0) text += ' Из них ' + searches + ' — по названию, проверь совпадения.';
-    qualitySummary.textContent = text;
-  }
-
-  function renderQuality(items, open) {
-    qualityItems = Array.isArray(items) ? items : [];
-    updateQualityBadge(qualityItems.length);
-    if (qualityOverlay.classList.contains('open')) {
-      renderQualityList();
-      updateQualitySummary();
-    }
-    if (open && qualityItems.length > 0) openQuality();
-  }
-
-  function openQuality() {
-    if (qualityItems.length === 0) return;
-    qualityError.textContent = '';
-    // Search matches that are not 100% confident open in review mode;
-    // an all-ID batch stays a compact "download all" summary.
-    const needsReview = qualityItems.some((it) => !it.selected);
-    qualityListOpen = needsReview;
-    qualityList.hidden = !qualityListOpen;
-    qualityShowList.textContent = qualityListOpen ? 'Скрыть список' : 'Показать список';
-    qualityDownload.textContent = qualityListOpen ? 'Скачать выбранные' : 'Скачать все';
-    renderQualityList();
-    updateQualitySummary();
-    qualityOverlay.classList.add('open');
-    qualityOverlay.setAttribute('aria-hidden', 'false');
-    qualityDownload.focus();
-  }
-
-  function closeQuality() {
-    qualityOverlay.classList.remove('open');
-    qualityOverlay.setAttribute('aria-hidden', 'true');
-    input.focus();
-  }
-
-  function selectedQualityItems() {
-    if (!qualityListOpen) return qualityItems.filter((it) => it.selected);
-    const checked = new Set();
-    qualityList.querySelectorAll('input[type=checkbox]').forEach((cb) => {
-      if (cb.checked) checked.add(cb.dataset.key);
-    });
-    return qualityItems.filter((it) => checked.has(it.key));
-  }
-
-  qualityShowList.onclick = () => {
-    qualityListOpen = !qualityListOpen;
-    qualityList.hidden = !qualityListOpen;
-    qualityShowList.textContent = qualityListOpen ? 'Скрыть список' : 'Показать список';
-    qualityDownload.textContent = qualityListOpen ? 'Скачать выбранные' : 'Скачать все';
-  };
-  qualityLater.onclick = closeQuality;
-  qualityOverlay.onclick = (e) => { if (e.target === qualityOverlay) closeQuality(); };
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && qualityOverlay.classList.contains('open')) {
-      e.preventDefault();
-      closeQuality();
-    }
-  });
-
-  qualityDownload.onclick = async () => {
-    const selected = selectedQualityItems();
-    if (selected.length === 0) { qualityError.textContent = 'Выбери хотя бы один трек'; return; }
-    closeQuality();
-    try { await window.go.ui.App.DownloadFound(selected); }
-    catch (e) { line('[error] ' + e, 'err'); }
-  };
-
-  async function checkQualityNow() {
-    if (qualityChecking) return;
-    try { await window.go.ui.App.CheckQuality(); }
-    catch (e) { line('[error] ' + e, 'err'); }
-  }
-
-  qualityBtn.onclick = () => {
-    if (qualityItems.length > 0) openQuality();
-    else checkQualityNow();
-  };
-
-  window.runtime.EventsOn('quality-check-started', () => {
-    qualityChecking = true;
-    qualityBtn.disabled = true;
-    qualityStatus.textContent = 'FLAC: проверка идёт…';
-  });
-  window.runtime.EventsOn('quality-check-progress', (done, total) => {
-    qualityStatus.textContent = 'FLAC: проверено ' + done + '/' + total + '…';
-  });
-  window.runtime.EventsOn('quality-check-finished', (text, found, err, pending) => {
-    qualityChecking = false;
-    qualityBtn.disabled = busy;
-    qualityStatus.textContent = text || 'FLAC: проверка завершена';
-    qualityStatus.title = qualityStatus.textContent;
-    updateQualityBadge(pending || 0);
-    const sQualityStatus = document.getElementById('sQualityStatus');
-    if (sQualityStatus) sQualityStatus.textContent = qualityStatus.textContent;
-    // The checker already wrote the Russian error line to the log.
-  });
-  window.runtime.EventsOn('quality-found', (items) => renderQuality(items, true));
-  window.runtime.EventsOn('quality-pending', (items) => renderQuality(items, false));
-
-  async function loadQualityStatus() {
-    try {
-      const s = await window.go.ui.App.QualityStatus();
-      qualityStatus.textContent = s.text || 'FLAC: проверок не было';
-      qualityStatus.title = qualityStatus.textContent;
-      updateQualityBadge(s.pending || 0);
-      if ((s.pending || 0) > 0) {
-        const items = await window.go.ui.App.PendingFound();
-        renderQuality(items, false);
-      }
-    } catch (e) { /* the backend may not be ready yet */ }
-  }
-  loadQualityStatus();
-
-  // --- Открыть папку загрузок ---
-  const openFolderBtn = document.getElementById('openFolderBtn');
-  openFolderBtn.onclick = async () => {
-    try { await window.go.ui.App.OpenOutputDir(); }
-    catch (e) { line('[error] ' + e, 'err'); }
-  };
-
-  // --- Предпросмотр ссылки: обложка и название, не блокирует скачивание ---
-  const preview = document.getElementById('preview');
-  const previewCover = document.getElementById('previewCover');
-  const previewTitle = document.getElementById('previewTitle');
-  const previewSub = document.getElementById('previewSub');
-  let previewSeq = 0;
-  function hidePreview() {
-    previewSeq++;
-    preview.hidden = true;
-    previewCover.removeAttribute('src');
-    previewTitle.textContent = '';
-    previewSub.textContent = '';
-  }
-  async function updatePreview() {
-    const link = input.value.trim();
-    // Несколько ссылок разом — превью не показываем.
-    if (!link || /\s/.test(link)) { hidePreview(); return; }
-    const seq = ++previewSeq;
-    try {
-      const p = await window.go.ui.App.PreviewLink(link);
-      if (seq !== previewSeq) return;
-      if (!p || !p.Title) { hidePreview(); return; }
-      previewTitle.textContent = p.Title;
-      previewSub.textContent = p.Subtitle || '';
-      if (p.CoverURL) {
-        previewCover.src = p.CoverURL;
-        previewCover.hidden = false;
-      } else {
-        previewCover.removeAttribute('src');
-        previewCover.hidden = true;
-      }
-      preview.hidden = false;
-    } catch (e) {
-      if (seq === previewSeq) hidePreview();
-    }
-  }
-  let previewTimer = 0;
-  input.addEventListener('input', () => {
-    clearTimeout(previewTimer);
-    previewTimer = setTimeout(updatePreview, 500);
-  });
-
-  // --- Drag & Drop ссылок на окно ---
-  async function useDroppedLink(e) {
-    const dt = e.dataTransfer;
-    if (!dt) return false;
-    const text = dt.getData('text/uri-list') || dt.getData('text/plain');
-    const first = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0];
-    if (!first) return false;
-    input.value = first;
-    input.focus();
-    await updatePreview();
-    return true;
-  }
-  input.addEventListener('dragover', (e) => { e.preventDefault(); input.classList.add('drop'); });
-  input.addEventListener('dragleave', () => input.classList.remove('drop'));
-  input.addEventListener('drop', async (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    input.classList.remove('drop');
-    await useDroppedLink(e);
-  });
-  window.addEventListener('dragover', (e) => e.preventDefault());
-  window.addEventListener('drop', async (e) => {
-    e.preventDefault();
-    await useDroppedLink(e);
-  });
-
-  // --- Агрегированный статусбар ---
-  // job = {total, states: Map<id, {share, done, total}>}
-  // % = (завершённые + сумма долей активных) / total — знаменатель
-  // стабилен с момента job-start и не зависит от неизвестных размеров.
-  const job = { total: 0, states: new Map(), ended: false, result: null };
-  let sbDirty = false;
-  function jobReset(title, count) {
-    job.total = count;
-    job.states = new Map();
-    job.ended = false;
-    job.result = null;
-    statusbar.hidden = false;
-    sbfill.className = '';
-    // Строки предыдущей job'ы — прочь.
-    tracks.innerHTML = '';
-    for (const k in trows) delete trows[k];
-    prog.innerHTML = '';
-    for (const k in rows) delete rows[k];
-    if (title) {
-      const h = document.createElement('div');
-      h.className = 'thead';
-      h.textContent = title;
-      tracks.appendChild(h);
-    }
-    scheduleSB();
-  }
-  function setTrackState(id, share, done, total) {
-    let s = job.states.get(id);
-    if (!s) { s = { share: 0, done: 0, total: 0 }; job.states.set(id, s); }
-    if (share !== null) s.share = share;
-    if (done !== null) s.done = done;
-    if (total !== null) s.total = total;
-    scheduleSB();
-  }
-  function scheduleSB() {
-    if (sbDirty) return;
-    sbDirty = true;
-    requestAnimationFrame(() => { sbDirty = false; drawSB(); });
-  }
-  function drawSB() {
-    if (job.total <= 0) return;
-    let done = 0, sum = 0, bytesDone = 0, bytesTotal = 0, anyTotal = false;
-    for (const s of job.states.values()) {
-      sum += s.share;
-      if (s.share >= 1) done++;
-      if (s.total > 0) { bytesDone += s.done; bytesTotal += s.total; anyTotal = true; }
-    }
-    // Доля активных треков без событий прогресса и вовсе неизвестна: 0.
-    const pct = Math.min(100, Math.round((sum / job.total) * 100));
-    sbfill.style.width = pct + '%';
-    sbpct.textContent = pct + '%';
-    sbcount.textContent = done + '/' + job.total + ' треков';
-    sbbytes.textContent = anyTotal ? fmtMB(bytesDone) + '/' + fmtMB(bytesTotal) + ' МБ' : '';
-    if (job.ended && job.result) {
-      // Остановленная job'а остаётся на фактическом % (янтарная),
-      // до 100% её не дотягиваем.
-      if (job.result.stopped) {
-        sbfill.className = 'stopped';
-        sbcount.textContent = done + '/' + job.total + ' треков, остановлено';
-      } else if (job.result.failed > 0) {
-        sbfill.className = 'err';
-        sbcount.textContent = done + '/' + job.total + ' треков, ошибок: ' + job.result.failed;
-      } else {
-        sbfill.className = 'done';
-      }
-    } else {
-      sbfill.className = '';
-    }
-  }
-
-  function trackBar(id, pct, done, total) {
-    const r = trows[id];
-    if (!r) return false;
-    const pctNum = Number(pct);
-    const hasTotal = Number(total) > 0 && pctNum >= 0;
-    r.fill.style.width = hasTotal ? pctNum + '%' : '100%';
-    r.bar.title = hasTotal
-      ? pctNum + '% ' + fmtMB(Number(done)) + '/' + fmtMB(Number(total)) + ' МБ'
-      : fmtMB(Number(done)) + ' МБ';
-    return true;
-  }
-  function progress(id, label, pct, done, total) {
-    // Агрегат считаем всегда, даже когда строка ещё не построена.
-    const pctNum = Number(pct);
-    setTrackState(id, pctNum >= 0 ? pctNum / 100 : 0, Number(done), Number(total));
-    if (trackBar(id, pct, done, total)) return;
-    let r = rows[id];
-    if (!r) {
-      r = document.createElement('div');
-      r.className = 'prow';
-      const name = document.createElement('span');
-      name.className = 'pname';
-      const bar = document.createElement('span');
-      bar.className = 'pbar';
-      const fill = document.createElement('span');
-      fill.className = 'pfill';
-      bar.appendChild(fill);
-      const stat = document.createElement('span');
-      stat.className = 'pstat info';
-      r.appendChild(name);
-      r.appendChild(bar);
-      r.appendChild(stat);
-      prog.appendChild(r);
-      rows[id] = r;
-    }
-    if (pctNum === 100) {
-      r.remove();
-      delete rows[id];
-      return;
-    }
-    const hasTotal = Number(total) > 0 && pctNum >= 0;
-    r.children[0].textContent = label;
-    r.children[1].children[0].style.width = hasTotal ? pctNum + '%' : '100%';
-    r.children[2].textContent = hasTotal
-      ? pctNum + '% ' + fmtMB(Number(done)) + '/' + fmtMB(Number(total)) + ' МБ'
-      : fmtMB(Number(done)) + ' МБ';
-  }
-  function hideRowsByLabel(text) {
-    for (const k in rows) {
-      const r = rows[k];
-      const name = r && r.children[0].textContent;
-      if (name && text.includes(name)) {
-        r.remove();
-        delete rows[k];
-      }
-    }
-  }
-  function trackList(items) {
-    items.forEach((pair) => {
-      const id = pair[0], label = pair[1];
-      if (trows[id]) return;
-      const r = document.createElement('div');
-      r.className = 'trow';
-      const name = document.createElement('span');
-      name.className = 'tname';
-      name.textContent = label;
-      name.title = label;
-      const bar = document.createElement('span');
-      bar.className = 'tbar';
-      const fill = document.createElement('span');
-      fill.className = 'tfill';
-      fill.style.display = 'block';
-      bar.appendChild(fill);
-      const stat = document.createElement('span');
-      stat.className = 'tstat';
-      stat.textContent = '[queued]';
-      r.appendChild(name);
-      r.appendChild(bar);
-      r.appendChild(stat);
-      tracks.appendChild(r);
-      trows[id] = { row: r, stat: stat, bar: bar, fill: fill };
-      // Ещё не терминированный трек входит в знаменатель сразу.
-      if (!job.states.has(id)) setTrackState(id, 0, null, null);
-    });
-  }
-  function trackStatus(id, status, kind) {
-    let t = trows[id];
-    if (!t) {
-      trackList([[id, '']]);
-      t = trows[id];
-      if (!t) return;
-    }
-    t.stat.textContent = status;
-    t.stat.className = 'tstat' + (kind ? ' ' + kind : '');
-    // Терминальные статусы закрывают долю трека: [done]/[skip]/[error].
-    // [stopped] не закрывает: трек не докачан, его доля остаётся
-    // частичной (или нулевой) и % статусбара не раздувается.
-    if (status.startsWith('[done]') || status.startsWith('[skip]') || status.startsWith('[error]')) {
-      setTrackState(id, 1, null, null);
-    } else if (status.startsWith('[downloading]')) {
-      // доля остаётся прежней (из progress), но трек уже «в работе».
-      if (!job.states.has(id)) setTrackState(id, 0, null, null);
-    }
-  }
-
-  window.runtime.EventsOn('job-start', (title, count) => {
-    jobReset(title, count);
-    // Фоновая job'а (обновление FLAC) стартует не по клику «Скачать»:
-    // переводим окно в то же состояние «■ Остановить».
-    busy = true;
-    btn.classList.add('stop');
-    btn.textContent = '■ Остановить';
-    settingsBtn.disabled = true;
-    qualityBtn.disabled = true;
-  });
-  window.runtime.EventsOn('job-end', (ok, skip, error, stopped) => {
-    job.ended = true;
-    job.result = { ok, skip, failed: error, stopped: !!stopped };
-    // Всё терминировано: дотягиваем доли, чтобы % сошёлся к 100.
-    // Остановка — исключение: незаконченное остаётся незаконченным.
-    if (!stopped) {
-      for (const s of job.states.values()) s.share = 1;
-    }
-    scheduleSB();
-    setIdleButton();
-  });
-  window.runtime.EventsOn('tracks', (items) => trackList(items));
-  window.runtime.EventsOn('track-status', (id, status, kind) => trackStatus(id, status, kind));
-  window.runtime.EventsOn('log', (text, kind) => {
-    line(text, kind);
-    if (text.startsWith('[done] ') || text.startsWith('[skip] ') ||
-        text.startsWith('[error] ') || text.startsWith('[stopped] ')) hideRowsByLabel(text);
-  });
-  window.runtime.EventsOn('progress', (id, label, pct, done, total) => progress(id, label, pct, done, total));
-
-  // --- Возможный дубль: своё окно вместо системного MessageBox ---
-  // Системный диалог обрезал длинные пути; здесь имя найденного файла
-  // показано отдельно, а полный путь переносится и его видно целиком.
-  const dupOverlay = document.getElementById('dupOverlay');
-  const dupPercent = document.getElementById('dupPercent');
-  const dupTrack = document.getElementById('dupTrack');
-  const dupMatchName = document.getElementById('dupMatchName');
-  const dupMatchPath = document.getElementById('dupMatchPath');
-  const dupFormat = document.getElementById('dupFormat');
-  const dupYes = document.getElementById('dupYes');
-  let dupOpen = false;
-
-  function onDupKey(e) {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      answerDup(false);
-    }
-  }
-  function openDup(p) {
-    dupPercent.textContent = p.percent + '%';
-    dupTrack.textContent = p.track || '';
-    dupMatchName.textContent = p.fileName || '';
-    dupMatchPath.textContent = p.filePath || '';
-    dupMatchPath.title = p.filePath || '';
-    dupFormat.hidden = !p.differentFormat;
-    if (p.differentFormat) {
-      dupFormat.textContent = 'Найденный файл в формате ' + String(p.fileExt || '').toUpperCase() +
-        ' — может получиться один трек в двух форматах.';
-    }
-    dupOpen = true;
-    dupOverlay.classList.add('open');
-    dupOverlay.setAttribute('aria-hidden', 'false');
-    document.addEventListener('keydown', onDupKey);
-    dupYes.focus();
-  }
-  function closeDup() {
-    if (!dupOpen) return;
-    dupOpen = false;
-    dupOverlay.classList.remove('open');
-    dupOverlay.setAttribute('aria-hidden', 'true');
-    document.removeEventListener('keydown', onDupKey);
-    input.focus();
-  }
-  async function answerDup(accept) {
-    if (!dupOpen) return;
-    closeDup();
-    try {
-      await window.go.ui.App.AnswerDuplicate(accept);
-    } catch (e) {
-      line('[error] ' + e, 'err');
-    }
-  }
-  dupYes.onclick = () => answerDup(true);
-  document.getElementById('dupNo').onclick = () => answerDup(false);
-  dupOverlay.onclick = (e) => { if (e.target === dupOverlay) answerDup(false); };
-  window.runtime.EventsOn('duplicate-prompt', (p) => openDup(p));
-
-  // --- Кнопка скачивания / остановки ---
-  // Пока идёт job'а, кнопка не блокируется, а меняет назначение:
-  // «Скачать» → красная «■ Остановить». Один флаг busy, повторных
-  // кликов нет: во время остановки кнопка переходит в «Останавливаю…».
-  let busy = false;
-  function setIdleButton() {
-    busy = false;
-    btn.classList.remove('stop');
-    btn.textContent = 'Скачать';
-    btn.disabled = false;
-    settingsBtn.disabled = false;
-    qualityBtn.disabled = qualityChecking;
-    input.focus();
-  }
-
-  // startDownload — общий путь старта для кнопки и Enter. busy проверяется
-  // здесь, поэтому Enter во время job'ы ничего не останавливает и не
-  // очищает поле: введённая ссылка остаётся заготовкой до job-end.
-  async function startDownload() {
-    if (busy) return;
-    const link = input.value.trim();
-    if (!link) return;
-    hidePreview();
-    input.value = '';
-    input.focus();
-    busy = true;
-    btn.classList.add('stop');
-    btn.textContent = '■ Остановить';
-    settingsBtn.disabled = true;
-    qualityBtn.disabled = true;
-    try {
-      const res = await window.go.ui.App.Download(link);
-      if (res) {
-        line(res, res.startsWith('[done]') ? 'done'
-          : (res.startsWith('[error]') ? 'err'
-            : (res.startsWith('[stopped]') ? 'stopped' : 'info')));
-      }
-    } catch (e) {
-      line('[error] ' + e, 'err');
-    }
-    setIdleButton();
-  }
-
-  btn.onclick = async () => {
-    if (busy) {
-      // Режим остановки: не даём запросить стоп дважды.
-      btn.disabled = true;
-      btn.textContent = 'Останавливаю…';
-      try {
-        await window.go.ui.App.Stop();
-      } catch (e) {
-        line('[error] ' + e, 'err');
-        btn.disabled = false;
-        btn.textContent = '■ Остановить';
-      }
-      return;
-    }
-    await startDownload();
-  };
-
-  // Enter в поле ссылки — только старт: остановка остаётся на кнопке.
-  // keyup, а не keydown: при открытом datalist значение уже зафиксировано.
-  input.addEventListener('keyup', (e) => {
-    if (e.key !== 'Enter' || e.isComposing) return;
-    startDownload();
-  });
-
-  // --- Окно настроек ---
-  const overlay = document.getElementById('settingsOverlay');
-  const sToken = document.getElementById('sToken');
-  const sOutput = document.getElementById('sOutput');
-  const sOutputPick = document.getElementById('sOutputPick');
-  const sLibrary = document.getElementById('sLibrary');
-  const sDiffOutput = document.getElementById('sDiffOutput');
-  const sWorkers = document.getElementById('sWorkers');
-  const sMinus = document.getElementById('sMinus');
-  const sPlus = document.getElementById('sPlus');
-  const sConvert = document.getElementById('sConvert');
-  const sEmbedCover = document.getElementById('sEmbedCover');
-  const sEmbedLyrics = document.getElementById('sEmbedLyrics');
-  const sSaveLrc = document.getElementById('sSaveLrc');
-  const sSubdirs = document.getElementById('sSubdirs');
-  const sSubdirTemplate = document.getElementById('sSubdirTemplate');
-  const sExportM3u = document.getElementById('sExportM3u');
-  const sFlacMonitor = document.getElementById('sFlacMonitor');
-  const sQualityStatus = document.getElementById('sQualityStatus');
-  const sCheckNow = document.getElementById('sCheckNow');
-  const tokenCheck = document.getElementById('tokenCheck');
-  const settingsError = document.getElementById('settingsError');
-  const tokenHelpLink = document.getElementById('tokenHelpLink');
-  const tokenHint = document.getElementById('tokenHint');
-  const tokenHelpOverlay = document.getElementById('tokenHelpOverlay');
-  const tokenHelpClose = document.getElementById('tokenHelpClose');
-  const tokenHelpOAuth = document.getElementById('tokenHelpOAuth');
-  const OAUTH_URL = 'https://oauth.yandex.ru/authorize?response_type=token&client_id=23cabbbdc6cd418abb4b39c32c41195d';
-
-  // Папка загрузок по умолчанию совпадает с папкой коллекции: поле и
-  // «Обзор» активны только когда отмечено «папка загрузок отличается».
-  function syncOutputField() {
-    const diff = sDiffOutput.checked;
-    sOutput.disabled = !diff;
-    sOutputPick.disabled = !diff;
-    if (!diff) sOutput.value = sLibrary.value;
-  }
-  sDiffOutput.addEventListener('change', syncOutputField);
-  sLibrary.addEventListener('input', syncOutputField);
-
-  // Шаблон подпапок редактируется только при включённых подпапках.
-  function syncSubdirTemplate() {
-    sSubdirTemplate.disabled = !sSubdirs.checked;
-  }
-  sSubdirs.addEventListener('change', syncSubdirTemplate);
-
-  // Степпер 1..10 вместо крошечных стрелок number-input.
-  function workersStep(delta) {
-    let v = Number(sWorkers.value);
-    if (!Number.isFinite(v)) v = 1;
-    v = Math.min(10, Math.max(1, Math.round(v) + delta));
-    sWorkers.value = v;
-  }
-  sMinus.onclick = () => workersStep(-1);
-  sPlus.onclick = () => workersStep(1);
-  sWorkers.addEventListener('blur', () => {
-    let v = Math.round(Number(sWorkers.value));
-    if (!Number.isFinite(v)) v = 1;
-    sWorkers.value = Math.min(10, Math.max(1, v));
-  });
-
-  // Подсказка про превью видна только при пустом токене.
-  function syncTokenHint() {
-    tokenHint.hidden = sToken.value.trim() !== '';
-  }
-  sToken.addEventListener('input', syncTokenHint);
-
-  function onTokenHelpKey(e) {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      closeTokenHelp();
-    }
-  }
-  function openTokenHelp() {
-    if (tokenHelpOverlay.classList.contains('open')) return;
-    tokenHelpOverlay.classList.add('open');
-    tokenHelpOverlay.setAttribute('aria-hidden', 'false');
-    document.addEventListener('keydown', onTokenHelpKey);
-    tokenHelpClose.focus();
-  }
-  function closeTokenHelp(focusLink) {
-    const wasOpen = tokenHelpOverlay.classList.contains('open');
-    tokenHelpOverlay.classList.remove('open');
-    tokenHelpOverlay.setAttribute('aria-hidden', 'true');
-    document.removeEventListener('keydown', onTokenHelpKey);
-    if (wasOpen && focusLink !== false) tokenHelpLink.focus();
-  }
-  tokenHelpLink.onclick = openTokenHelp;
-  tokenHelpClose.onclick = () => closeTokenHelp();
-  tokenHelpOverlay.onclick = (e) => { if (e.target === tokenHelpOverlay) closeTokenHelp(); };
-  tokenHelpOAuth.onclick = () => window.runtime.BrowserOpenURL(OAUTH_URL);
-
-  function closeSettings() {
-    closeTokenHelp(false);
-    overlay.classList.remove('open');
-    tokenCheck.textContent = '';
-    tokenHint.hidden = true;
-    settingsError.textContent = '';
-    input.focus();
-  }
-  settingsBtn.onclick = async () => {
-    if (busy) return; // идёт скачивание
-    settingsError.textContent = '';
-    try {
-      const s = await window.go.ui.App.GetSettings();
-      sToken.value = s.Token || '';
-      sLibrary.value = s.LibraryDir || '';
-      // Раздельная папка загрузок — только если она реально отличается.
-      sDiffOutput.checked = (s.OutputDir || '') !== (s.LibraryDir || '');
-      syncOutputField();
-      sOutput.value = s.OutputDir || '';
-      sWorkers.value = s.Workers;
-      sConvert.checked = !!s.ConvertM4A;
-      sEmbedCover.checked = !!s.EmbedCover;
-      sEmbedLyrics.checked = s.EmbedLyrics !== false;
-      sSaveLrc.checked = !!s.SaveLRC;
-      sSubdirs.checked = !!s.Subdirs;
-      sSubdirTemplate.value = s.SubdirTemplate || '%artist%/%album%';
-      sExportM3u.checked = !!s.ExportM3U;
-      sFlacMonitor.checked = !!s.FlacMonitor;
-      sQualityStatus.textContent = s.QualityText || 'FLAC: проверок не было';
-      syncSubdirTemplate();
-      tokenCheck.textContent = '';
-      syncTokenHint();
-      overlay.classList.add('open');
-    } catch (e) {
-      line('[error] ' + e, 'err');
-    }
-  };
-  document.getElementById('sCancel').onclick = closeSettings;
-  overlay.onclick = (e) => { if (e.target === overlay) closeSettings(); };
-
-  document.getElementById('sCheck').onclick = async () => {
-    tokenCheck.textContent = 'проверяю...';
-    tokenCheck.style.color = '#aaa';
-    try {
-      const res = await window.go.ui.App.CheckToken(sToken.value);
-      tokenCheck.style.color = '#7ee787';
-      tokenCheck.textContent = res;
-    } catch (e) {
-      tokenCheck.style.color = '#ff7b72';
-      tokenCheck.textContent = String(e);
-    }
-  };
-
-  document.getElementById('sOutputPick').onclick = async () => {
-    try {
-      const p = await window.go.ui.App.PickFolder();
-      if (p) sOutput.value = p;
-    } catch (e) { settingsError.textContent = String(e); }
-  };
-  document.getElementById('sLibraryPick').onclick = async () => {
-    try {
-      const p = await window.go.ui.App.PickFolder();
-      if (p) { sLibrary.value = p; syncOutputField(); }
-    } catch (e) { settingsError.textContent = String(e); }
-  };
-
-  sCheckNow.onclick = async () => {
-    settingsError.textContent = '';
-    closeSettings();
-    await checkQualityNow();
-  };
-
-  document.getElementById('sSave').onclick = async () => {
-    settingsError.textContent = '';
-    const workers = Number(sWorkers.value);
-    if (!Number.isInteger(workers) || workers < 1 || workers > 10) {
-      settingsError.textContent = 'Число параллельных скачиваний: целое от 1 до 10';
-      return;
-    }
-    // Без чекбокса «отличается» качаем в папку коллекции.
-    const library = sLibrary.value;
-    const output = sDiffOutput.checked ? sOutput.value : library;
-    if (!output.trim()) {
-      settingsError.textContent = sDiffOutput.checked
-        ? 'Папка загрузок не может быть пустой'
-        : 'Папка коллекции пуста — укажи её или включи «папка загрузок отличается»';
-      return;
-    }
-    try {
-      await window.go.ui.App.SaveSettings({
-        Token: sToken.value,
-        OutputDir: output,
-        LibraryDir: library,
-        Workers: workers,
-        ConvertM4A: sConvert.checked,
-        EmbedCover: sEmbedCover.checked,
-        EmbedLyrics: sEmbedLyrics.checked,
-        SaveLRC: sSaveLrc.checked,
-        Subdirs: sSubdirs.checked,
-        SubdirTemplate: sSubdirTemplate.value,
-        ExportM3U: sExportM3u.checked,
-        FlacMonitor: sFlacMonitor.checked,
-      });
-      closeSettings();
-      line('[done] настройки сохранены', 'done');
-    } catch (e) {
-      settingsError.textContent = String(e);
-    }
-  };
-
-  // Поле ссылки — стартовая точка клавиатурного сценария: Ctrl+V + Enter.
-  input.focus();
-</script>
+<script src="app.js"></script>
 </body>
 </html>
