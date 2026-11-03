@@ -7,6 +7,7 @@
 
 **Добавлено**
 - Файловый лог рядом с приложением: сбои и ошибки теперь можно разобрать после закрытия окна.
+- Enter в поле ссылки запускает скачивание, а поле само получает фокус при старте и после загрузки.
 
 **Исправлено**
 - В логе видно, почему вместо FLAC скачался MP3: показывается качество, кодек и битрейт, которые вернул Яндекс.
@@ -18,6 +19,7 @@
 
 ### Добавлено
 - `add-file-log`: пакет `internal/applog` пишет все строки окна в `app.log` рядом с exe (fallback `%LOCALAPPDATA%\YandexMusicDownloader\app.log`), формат RFC 3339 + `[уровень]`, ротация 5 МиБ в `app.log.1` с одной резервной копией, редакция `OAuth ...` и зарегистрированного токена до записи в файл и окно, шапка с версией/VCS-ревизией, ОС, архитектурой и путями, строка `[log] файл: ...` при старте. Тесты: `TestWriteFormat`, `TestWriteMultiline`, `TestRedactOAuth`, `TestRedactSecretValue`, `TestRotate`, `TestRotateReplacesBackup`, `TestOpenFallback`, `TestOpenAllFail`, `TestConcurrentWrites`, `TestLogWritesFile`, `TestStartupLogsFilePath`, `TestLogRedactsToken`.
+- `enter-to-download`: в `src/frontend/dist/index.html` старт вынесен в `startDownload()`, Enter на `#link` вызывает его через `keyup`, кнопка остаётся тумблером старт/стоп; при `busy` Enter игнорируется и сохраняет текст в поле; фокус возвращается при старте окна, после `job-end`, закрытия окна дубля и настроек. Стенд `tests/statusbar_check.js` получил `dispatch`/`activeElement` и сценарии Enter; README обновлён. Проверки: `node tests/statusbar_check.js`, `go test ./...`, `openspec validate --all`, `python scripts/check-version.py`.
 
 ### Исправлено
 - `fallback-reason-and-album-ids`: `DownloadTrack` сохраняет причину отказа lossless (`quality`, `codec`, `bitrate` из `/get-file-info`) в `Result.FallbackReason`, пишет её в строку `[fallback MP3: ...]` и отдельной строкой `[fallback]` для плейлистов и альбомов; ID из JSON (`any`) форматируются helper'ом `idString` (`ids.go`), поэтому `float64` больше не попадает в теги в экспоненциальной записи (`track.go`, `playlist.go`). Тесты: `TestIDString`, `TestLosslessFallbackReason`, `TestJobCallbacksLogFallbackReason`, обновлён `TestFormatEvent`.

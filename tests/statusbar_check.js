@@ -12,6 +12,7 @@ function makeEl(tag) {
     tag, children: [], style: {}, className: '', textContent: '', title: '',
     value: '', checked: false, hidden: false, disabled: false,
     _cls: new Set(),
+    _listeners: {},
     classList: {
       add: (c) => el._cls.add(c),
       remove: (c) => el._cls.delete(c),
@@ -22,10 +23,16 @@ function makeEl(tag) {
       if (el.parent) el.parent.children = el.parent.children.filter((x) => x !== el);
       if (el.id && registry[el.id] === el) delete registry[el.id];
     },
-    addEventListener() {},
+    addEventListener(type, fn) {
+      (el._listeners[type] = el._listeners[type] || []).push(fn);
+    },
+    removeEventListener(type, fn) {
+      el._listeners[type] = (el._listeners[type] || []).filter((x) => x !== fn);
+    },
     removeAttribute() {},
-    focus() {},
-    blur() {},
+    setAttribute() {},
+    focus() { document.activeElement = (el.id && registry[el.id]) || el; },
+    blur() { if (document.activeElement === el) document.activeElement = null; },
     get innerHTML() { return ''; },
     set innerHTML(v) { el.children = []; },
     get children_map() { return el.children; },
@@ -42,12 +49,20 @@ function makeEl(tag) {
 }
 
 const registry = {};
+const docListeners = {};
 const document = {
+  activeElement: null,
   getElementById(id) {
     if (!registry[id]) { registry[id] = makeEl('div'); registry[id].id = id; }
     return registry[id];
   },
   createElement(tag) { return makeEl(tag); },
+  addEventListener(type, fn) {
+    (docListeners[type] = docListeners[type] || []).push(fn);
+  },
+  removeEventListener(type, fn) {
+    docListeners[type] = (docListeners[type] || []).filter((x) => x !== fn);
+  },
 };
 
 // --- Стуб window.runtime ---
@@ -72,6 +87,12 @@ function emit(name, ...args) {
   handlers[name](...args);
 }
 
+// Вызывает слушателей элемента (например, keyup на #link).
+function dispatch(el, type, event) {
+  const fns = (el._listeners && el._listeners[type]) || [];
+  for (const fn of fns) fn(event || {});
+}
+
 // --- Помощники чтения статусбара ---
 const sb = () => ({
   pct: registry['sbpct'].textContent,
@@ -86,6 +107,11 @@ function check(name, cond, extra) {
   if (cond) { console.log('  ok - ' + name); }
   else { failures++; console.log('  FAIL - ' + name + (extra ? ' | ' + extra : '')); }
 }
+
+// --- Сценарий 0: поле ссылки получает фокус при загрузке страницы ---
+console.log('scenario: autofocus on load');
+check('поле ссылки в фокусе', document.activeElement === registry['link'],
+  document.activeElement && document.activeElement.id);
 
 // --- Сценарий 1: плейлист 20 треков, 10 done + 2 активных по 50% ---
 console.log('scenario: playlist 20 tracks');
@@ -194,9 +220,82 @@ check('ширина полосы = 50%', s.width === '50%', s.width);
   await stopping;
   check('кнопка вернулась в «Скачать»', !dl.classList.contains('stop') && dl.textContent === 'Скачать' && !dl.disabled, dl.textContent);
   check('⚙ разблокирован', registry['settingsBtn'].disabled === false);
+  check('фокус вернулся в поле после job-end', document.activeElement === linkInput,
+    document.activeElement && document.activeElement.id);
   const last = registry['log'].children[registry['log'].children.length - 1];
   check('лог получил [stopped] янтарём', last && last.textContent.startsWith('[stopped]') && last.className === 'stopped',
     last && last.textContent + '/' + last.className);
+
+  // --- Сценарий 8: Enter в поле запускает скачивание ---
+  console.log('scenario: Enter starts download');
+  let enterCalls = [];
+  let stopCallsBusy = 0;
+  let resolveEnterDownload = null;
+  window.go.ui.App.Download = (link) => {
+    enterCalls.push(link);
+    return new Promise((r) => { resolveEnterDownload = r; });
+  };
+  window.go.ui.App.Stop = () => { stopCallsBusy++; return Promise.resolve(); };
+
+  const enterLink = 'https://music.yandex.ru/track/2';
+  linkInput.value = enterLink;
+  dispatch(linkInput, 'keyup', { key: 'Enter', isComposing: false });
+  check('Download вызван один раз', enterCalls.length === 1, String(enterCalls.length));
+  check('Download получил ссылку', enterCalls[0] === enterLink, enterCalls[0]);
+  check('поле очищено после старта', linkInput.value === '', linkInput.value);
+  check('кнопка = ■ Остановить', dl.classList.contains('stop'), dl.textContent);
+
+  // --- Сценарий 9: Enter при busy ничего не делает ---
+  console.log('scenario: Enter while busy is ignored');
+  const stagedLink = 'https://music.yandex.ru/track/3';
+  linkInput.value = stagedLink;
+  dispatch(linkInput, 'keyup', { key: 'Enter', isComposing: false });
+  check('вторая загрузка не запущена', enterCalls.length === 1, String(enterCalls.length));
+  check('Stop не вызван', stopCallsBusy === 0, String(stopCallsBusy));
+  check('текст остался в поле', linkInput.value === stagedLink, linkInput.value);
+
+  resolveEnterDownload('');
+  await new Promise((r) => setTimeout(r, 0));
+  check('после job-end кнопка = «Скачать»', dl.textContent === 'Скачать' && !dl.disabled, dl.textContent);
+  check('после job-end фокус в поле', document.activeElement === linkInput,
+    document.activeElement && document.activeElement.id);
+
+  // --- Сценарий 10: Enter в пустом поле ничего не делает ---
+  console.log('scenario: Enter in empty field');
+  enterCalls = [];
+  linkInput.value = '';
+  dispatch(linkInput, 'keyup', { key: 'Enter', isComposing: false });
+  check('Download не вызван', enterCalls.length === 0, String(enterCalls.length));
+
+  // --- Сценарий 11: Enter во время IME не запускает скачивание ---
+  console.log('scenario: Enter during IME is ignored');
+  linkInput.value = 'https://music.yandex.ru/track/4';
+  dispatch(linkInput, 'keyup', { key: 'Enter', isComposing: true });
+  check('Download не вызван при IME', enterCalls.length === 0, String(enterCalls.length));
+  linkInput.value = '';
+
+  // --- Сценарий 12: фокус возвращается после окна дубля ---
+  console.log('scenario: focus returns after duplicate dialog');
+  window.go.ui.App.AnswerDuplicate = () => Promise.resolve();
+  emit('duplicate-prompt', {
+    percent: 90,
+    track: 'Artist — Track',
+    fileName: 'Artist - Track.flac',
+    filePath: 'C:\\Music\\Artist - Track.flac',
+    differentFormat: false,
+  });
+  check('фокус в окне дубля', document.activeElement === registry['dupYes'],
+    document.activeElement && document.activeElement.id);
+  await ctx.answerDup(false);
+  check('после ответа фокус в поле', document.activeElement === linkInput,
+    document.activeElement && document.activeElement.id);
+
+  // --- Сценарий 13: фокус возвращается после закрытия настроек ---
+  console.log('scenario: focus returns after settings');
+  document.activeElement = registry['dl'];
+  ctx.closeSettings();
+  check('после настроек фокус в поле', document.activeElement === linkInput,
+    document.activeElement && document.activeElement.id);
 
   process.exit(failures ? 1 : 0);
 })();

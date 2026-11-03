@@ -579,6 +579,7 @@
     dupOverlay.classList.remove('open');
     dupOverlay.setAttribute('aria-hidden', 'true');
     document.removeEventListener('keydown', onDupKey);
+    input.focus();
   }
   async function answerDup(accept) {
     if (!dupOpen) return;
@@ -605,21 +606,14 @@
     btn.textContent = 'Скачать';
     btn.disabled = false;
     settingsBtn.disabled = false;
+    input.focus();
   }
-  btn.onclick = async () => {
-    if (busy) {
-      // Режим остановки: не даём запросить стоп дважды.
-      btn.disabled = true;
-      btn.textContent = 'Останавливаю…';
-      try {
-        await window.go.ui.App.Stop();
-      } catch (e) {
-        line('[error] ' + e, 'err');
-        btn.disabled = false;
-        btn.textContent = '■ Остановить';
-      }
-      return;
-    }
+
+  // startDownload — общий путь старта для кнопки и Enter. busy проверяется
+  // здесь, поэтому Enter во время job'ы ничего не останавливает и не
+  // очищает поле: введённая ссылка остаётся заготовкой до job-end.
+  async function startDownload() {
+    if (busy) return;
     const link = input.value.trim();
     if (!link) return;
     hidePreview();
@@ -640,7 +634,31 @@
       line('[error] ' + e, 'err');
     }
     setIdleButton();
+  }
+
+  btn.onclick = async () => {
+    if (busy) {
+      // Режим остановки: не даём запросить стоп дважды.
+      btn.disabled = true;
+      btn.textContent = 'Останавливаю…';
+      try {
+        await window.go.ui.App.Stop();
+      } catch (e) {
+        line('[error] ' + e, 'err');
+        btn.disabled = false;
+        btn.textContent = '■ Остановить';
+      }
+      return;
+    }
+    await startDownload();
   };
+
+  // Enter в поле ссылки — только старт: остановка остаётся на кнопке.
+  // keyup, а не keydown: при открытом datalist значение уже зафиксировано.
+  input.addEventListener('keyup', (e) => {
+    if (e.key !== 'Enter' || e.isComposing) return;
+    startDownload();
+  });
 
   // --- Окно настроек ---
   const overlay = document.getElementById('settingsOverlay');
@@ -737,6 +755,7 @@
     tokenCheck.textContent = '';
     tokenHint.hidden = true;
     settingsError.textContent = '';
+    input.focus();
   }
   settingsBtn.onclick = async () => {
     if (busy) return; // идёт скачивание
@@ -830,6 +849,9 @@
       settingsError.textContent = String(e);
     }
   };
+
+  // Поле ссылки — стартовая точка клавиатурного сценария: Ctrl+V + Enter.
+  input.focus();
 </script>
 </body>
 </html>
