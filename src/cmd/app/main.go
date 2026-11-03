@@ -37,12 +37,14 @@ func main() {
 		Height:           height,
 		MinWidth:         ui.MinWindowWidth,
 		MinHeight:        ui.MinWindowHeight,
+		StartHidden:      true,
 		BackgroundColour: &options.RGBA{R: 18, G: 16, B: 15, A: 255},
 		Windows:          &windows.Options{Theme: windows.Dark},
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
 		OnStartup:     app.Startup,
+		OnDomReady:    app.DomReady,
 		OnBeforeClose: app.BeforeClose,
 		Bind:          []any{app},
 	}); err != nil {

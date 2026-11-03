@@ -22,6 +22,36 @@
   };
   const hide = (el, value) => { if (el) el.hidden = value; };
 
+  // --- Boot splash ---
+  const boot = $('boot');
+  const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const BOOT_MIN_MS = reduceMotion ? 400 : 1000;
+  const BOOT_FADE_MS = 160;
+  let bootDismissed = false;
+  let bootStarted = false;
+
+  function dismissBoot() {
+    if (bootDismissed || !boot) return;
+    bootDismissed = true;
+    if (typeof setTimeout !== 'function') {
+      boot.remove();
+      return;
+    }
+    boot.classList.add('boot--done');
+    setTimeout(() => boot.remove(), BOOT_FADE_MS);
+  }
+
+  function startBoot() {
+    if (bootDismissed || bootStarted || !boot) return;
+    bootStarted = true;
+    if (typeof setTimeout !== 'function') {
+      dismissBoot();
+      return;
+    }
+    boot.classList.add('boot--run');
+    setTimeout(dismissBoot, BOOT_MIN_MS);
+  }
+
   // --- DOM ---
   const input = $('link');
   const btn = $('dl');
@@ -77,10 +107,8 @@
   const dropOverlay = $('dropOverlay');
 
   const settingsBtn = $('settingsBtn');
+  const settingsBadge = $('settingsBadge');
   const openFolderBtn = $('openFolderBtn');
-  const qualityBtn = $('qualityBtn');
-  const qualityBadge = $('qualityBadge');
-  const qualityStatus = $('qualityStatus');
 
   const settingsOverlay = $('settingsOverlay');
   const settingsCard = $('settingsCard');
@@ -103,6 +131,9 @@
   const sFlacMonitor = $('sFlacMonitor');
   const sQualityStatus = $('sQualityStatus');
   const sCheckNow = $('sCheckNow');
+  const sQualityOpen = $('sQualityOpen');
+  const sRejectedList = $('sRejectedList');
+  const sRejectedEmpty = $('sRejectedEmpty');
   const tokenCheck = $('tokenCheck');
   const settingsError = $('settingsError');
   const tokenHelpLink = $('tokenHelpLink');
@@ -160,8 +191,10 @@
   };
   let logErrorCount = 0;
   let qualityChecking = false;
+  let qualityOutputDir = '';
   let qualityItems = [];
   let qualityListOpen = false;
+  let rejectedItems = [];
   let dupOpen = false;
   let settingsSnapshot = null;
   let confirmAction = null;
@@ -296,14 +329,14 @@
       if (dlLabel) dlLabel.textContent = jobIsQuality ? 'Остановить обновление' : 'Остановить';
       setIcon('stop');
       if (settingsBtn) settingsBtn.disabled = true;
-      if (qualityBtn) qualityBtn.disabled = true;
+      if (sCheckNow) sCheckNow.disabled = true;
     } else {
       setClass(btn, 'stop', false);
       btn.disabled = false;
       if (dlLabel) dlLabel.textContent = 'Скачать';
       setIcon('download');
       if (settingsBtn) settingsBtn.disabled = false;
-      if (qualityBtn) qualityBtn.disabled = qualityChecking;
+      if (sCheckNow) sCheckNow.disabled = qualityChecking;
       if (input) input.focus();
     }
   }
@@ -917,28 +950,34 @@
   // --- Quality monitor ---
   function setQualityStatus(text) {
     const value = text || 'FLAC: проверок не было';
-    if (qualityStatus) {
-      qualityStatus.textContent = value;
-      qualityStatus.title = value;
-      qualityStatus.hidden = value === 'FLAC: проверок не было';
-    }
     if (sQualityStatus) sQualityStatus.textContent = value;
   }
 
+  function syncQualityOpen(n) {
+    if (!sQualityOpen) return;
+    sQualityOpen.hidden = n <= 0;
+    sQualityOpen.textContent = 'Открыть найденное (' + n + ')';
+  }
+
   function updateQualityBadge(n) {
-    if (!qualityBtn) return;
-    if (qualityBadge) {
-      qualityBadge.hidden = n <= 0;
-      qualityBadge.textContent = String(n);
+    const count = Number(n) || 0;
+    if (settingsBadge) {
+      settingsBadge.hidden = count <= 0;
+      settingsBadge.textContent = String(count);
     }
-    const label = n > 0 ? 'Открыть найденные FLAC (' + n + ')' : 'Проверить наличие FLAC';
-    qualityBtn.title = label;
-    if (qualityBtn.setAttribute) qualityBtn.setAttribute('aria-label', label);
+    if (settingsBtn) {
+      const label = count > 0 ? 'Настройки, найдено FLAC: ' + count : 'Настройки';
+      settingsBtn.title = label;
+      if (settingsBtn.setAttribute) settingsBtn.setAttribute('aria-label', label);
+    }
+    syncQualityOpen(count);
   }
 
   function qualityRow(it) {
-    const row = document.createElement('label');
+    const row = document.createElement('div');
     row.className = 'qrow';
+    const label = document.createElement('label');
+    label.className = 'qrow-main';
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = !!it.selected;
@@ -968,9 +1007,130 @@
       match.textContent = text;
       main.appendChild(match);
     }
-    row.appendChild(cb);
-    row.appendChild(main);
+    label.appendChild(cb);
+    label.appendChild(main);
+    row.appendChild(label);
+    if (it.matchSource === 'search' && !it.alreadyFlac) {
+      const reject = document.createElement('button');
+      reject.type = 'button';
+      reject.className = 'btn btn-ghost btn-sm qreject';
+      reject.textContent = 'Не тот трек';
+      reject.title = 'Запомнить, что это не тот трек';
+      reject.disabled = qualityChecking;
+      reject.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        return rejectQualityItem(it);
+      };
+      row.appendChild(reject);
+    }
     return row;
+  }
+
+  async function rejectQualityItem(it) {
+    if (qualityChecking) {
+      if (qualityError) qualityError.textContent = 'Идёт проверка — дождитесь завершения';
+      return;
+    }
+    if (qualityError) qualityError.textContent = '';
+    const index = qualityItems.findIndex((x) => x.key === it.key);
+    try {
+      const remaining = await callApp('RejectFound', it);
+      qualityItems = Array.isArray(remaining) ? remaining : [];
+      updateQualityBadge(qualityItems.length);
+      refreshRejectedList();
+      if (qualityItems.length === 0) {
+        closeQuality();
+        return;
+      }
+      renderQualityList();
+      updateQualitySummary();
+      focusQualityRow(Math.max(0, Math.min(index, qualityItems.length - 1)));
+    } catch (e) {
+      if (qualityError) qualityError.textContent = String(e);
+    }
+  }
+
+  function focusQualityRow(index) {
+    if (!qualityList || !qualityList.children || qualityList.children.length === 0) return;
+    const row = qualityList.children[Math.max(0, Math.min(index, qualityList.children.length - 1))];
+    if (!row || !row.children || row.children.length === 0) return;
+    let target = row.children[row.children.length - 1];
+    if (target && target.className === 'qrow-main' && target.children && target.children[0]) {
+      target = target.children[0];
+    }
+    if (target && typeof target.focus === 'function') target.focus();
+  }
+
+  function renderRejectedList(items) {
+    rejectedItems = Array.isArray(items) ? items.slice() : [];
+    if (sRejectedEmpty) sRejectedEmpty.hidden = rejectedItems.length > 0;
+    if (!sRejectedList) return;
+    sRejectedList.innerHTML = '';
+    sRejectedList.hidden = rejectedItems.length === 0;
+    rejectedItems.forEach((it) => {
+      const row = document.createElement('div');
+      row.className = 'rejected-row';
+      const main = document.createElement('div');
+      main.className = 'rejected-main';
+      const local = document.createElement('div');
+      local.className = 'rejected-local';
+      local.textContent = it.localLabel || it.fileName || it.path || '';
+      const cand = document.createElement('div');
+      cand.className = 'rejected-cand';
+      const bits = [];
+      if (it.matchedArtist) bits.push(it.matchedArtist);
+      if (it.matchedTitle) bits.push(it.matchedTitle);
+      let text = 'Найдено: ' + (bits.length ? bits.join(' — ') : ('ID ' + (it.trackId || '')));
+      if (it.album) text += ' · ' + it.album;
+      if (it.year) text += ' (' + it.year + ')';
+      if (it.confidence) text += ' · ' + it.confidence + '%';
+      cand.textContent = text;
+      main.appendChild(local);
+      main.appendChild(cand);
+      if (it.declinedAtText) {
+        const when = document.createElement('div');
+        when.className = 'rejected-date';
+        when.textContent = it.declinedAtText;
+        main.appendChild(when);
+      }
+      const undo = document.createElement('button');
+      undo.type = 'button';
+      undo.className = 'btn btn-secondary btn-sm';
+      undo.textContent = 'Вернуть';
+      undo.disabled = qualityChecking || busy;
+      undo.onclick = () => undoRejected(it);
+      row.appendChild(main);
+      row.appendChild(undo);
+      sRejectedList.appendChild(row);
+    });
+  }
+
+  function refreshRejectedList() {
+    callApp('GetSettings')
+      .then((s) => {
+        if (s && Array.isArray(s.QualityRejected)) renderRejectedList(s.QualityRejected);
+      })
+      .catch(() => {
+        // The settings modal will refetch the list when it opens.
+      });
+  }
+
+  async function undoRejected(it) {
+    if (qualityChecking) {
+      if (settingsError) settingsError.textContent = 'Идёт проверка — дождитесь завершения';
+      return;
+    }
+    if (settingsError) settingsError.textContent = '';
+    try {
+      const found = await callApp('UndoReject', it.path, it.trackId);
+      renderQuality(Array.isArray(found) ? found : []);
+      const index = rejectedItems.findIndex((x) => x.path === it.path && x.trackId === it.trackId);
+      if (index >= 0) rejectedItems.splice(index, 1);
+      renderRejectedList(rejectedItems);
+    } catch (e) {
+      if (settingsError) settingsError.textContent = String(e);
+    }
   }
 
   function renderQualityList() {
@@ -988,17 +1148,19 @@
     if (searches > 0) {
       text += ' Из них ' + searches + ' — по названию, проверь совпадения.';
     }
+    if (qualityOutputDir) {
+      text += ' Новые FLAC — в ' + qualityOutputDir + '; старые MP3 — в _old.';
+    }
     qualitySummary.textContent = text;
   }
 
-  function renderQuality(items, open) {
+  function renderQuality(items) {
     qualityItems = Array.isArray(items) ? items : [];
     updateQualityBadge(qualityItems.length);
     if (qualityOverlay && qualityOverlay.classList.contains('open')) {
       renderQualityList();
       updateQualitySummary();
     }
-    if (open && qualityItems.length > 0) openQuality();
   }
 
   function openQuality() {
@@ -1021,8 +1183,14 @@
     if (!qualityOverlay) return;
     qualityOverlay.classList.remove('open');
     qualityOverlay.setAttribute('aria-hidden', 'true');
-    activeModal = null;
-    if (input) input.focus();
+    const settingsOpen = settingsOverlay && settingsOverlay.classList.contains('open');
+    activeModal = settingsOpen ? 'settings' : null;
+    if (settingsOpen) {
+      const target = (sQualityOpen && !sQualityOpen.hidden) ? sQualityOpen : sCheckNow;
+      if (target) target.focus();
+    } else if (input) {
+      input.focus();
+    }
   }
 
   function selectedQualityItems() {
@@ -1056,7 +1224,9 @@
         if (qualityError) qualityError.textContent = 'Выбери хотя бы один трек';
         return;
       }
+      const settingsOpen = settingsOverlay && settingsOverlay.classList.contains('open');
       closeQuality();
+      if (settingsOpen) closeSettings(true);
       try {
         await callApp('DownloadFound', selected);
       } catch (e) {
@@ -1068,46 +1238,57 @@
 
   async function checkQualityNow() {
     if (qualityChecking) return;
-    try {
-      await callApp('CheckQuality');
-    } catch (e) {
-      line('[error] ' + e, 'err');
-    }
+    await callApp('CheckQuality');
   }
 
-  if (qualityBtn) {
-    qualityBtn.onclick = () => {
-      if (qualityItems.length > 0) openQuality();
-      else checkQualityNow();
+  if (sQualityOpen) {
+    sQualityOpen.onclick = () => {
+      if (qualityItems.length > 0) {
+        openQuality();
+        return;
+      }
+      callApp('PendingFound')
+        .then((items) => {
+          renderQuality(items);
+          if (qualityItems.length > 0) openQuality();
+        })
+        .catch((e) => line('[error] ' + e, 'err'));
     };
   }
 
   events('quality-check-started', () => {
     qualityChecking = true;
-    if (qualityBtn) qualityBtn.disabled = true;
+    if (sCheckNow) sCheckNow.disabled = true;
     setQualityStatus('FLAC: проверка идёт…');
+    if (qualityOverlay && qualityOverlay.classList.contains('open')) renderQualityList();
+    renderRejectedList(rejectedItems);
   });
   events('quality-check-progress', (done, total) => {
     setQualityStatus('FLAC: проверено ' + done + '/' + total + '…');
   });
   events('quality-check-finished', (text, found, err, pending) => {
     qualityChecking = false;
-    if (qualityBtn) qualityBtn.disabled = busy;
+    if (sCheckNow) sCheckNow.disabled = busy;
     setQualityStatus(text || 'FLAC: проверка завершена');
     updateQualityBadge(pending || 0);
-    if (err && qualityStatus) qualityStatus.title = err;
+    if (err && sQualityStatus) sQualityStatus.title = err;
+    if (qualityOverlay && qualityOverlay.classList.contains('open')) renderQualityList();
+    renderRejectedList(rejectedItems);
   });
-  events('quality-found', (items) => renderQuality(items, true));
-  events('quality-pending', (items) => renderQuality(items, false));
+  events('quality-found', (items) => renderQuality(items));
+  events('quality-pending', (items) => renderQuality(items));
 
   async function loadQualityStatus() {
     try {
       const s = await callApp('QualityStatus');
       setQualityStatus(s && s.text ? s.text : 'FLAC: проверок не было');
+      qualityOutputDir = (s && s.outputDir) || qualityOutputDir;
+      qualityChecking = !!(s && s.checking);
+      if (sCheckNow) sCheckNow.disabled = qualityChecking;
       updateQualityBadge((s && s.pending) || 0);
       if (s && s.pending > 0) {
         const items = await callApp('PendingFound');
-        renderQuality(items, false);
+        renderQuality(items);
       }
     } catch (e) {
       // Бэкенд может быть ещё не готов при первом кадре.
@@ -1239,6 +1420,16 @@
       if (sExportM3u) sExportM3u.checked = !!s.ExportM3U;
       if (sFlacMonitor) sFlacMonitor.checked = !!s.FlacMonitor;
       if (sQualityStatus) sQualityStatus.textContent = s.QualityText || 'FLAC: проверок не было';
+      qualityOutputDir = s.OutputDir || qualityOutputDir;
+      qualityChecking = !!s.QualityChecking;
+      if (sCheckNow) sCheckNow.disabled = qualityChecking || busy;
+      renderRejectedList(s.QualityRejected || []);
+      updateQualityBadge(s.QualityPending || 0);
+      if (s.QualityPending > 0 && qualityItems.length === 0) {
+        callApp('PendingFound')
+          .then((items) => renderQuality(items))
+          .catch((e) => line('[error] ' + e, 'err'));
+      }
       syncSubdirTemplate();
       syncTokenHint();
       if (tokenCheck) {
@@ -1360,19 +1551,14 @@
   if (sCheckNow) {
     sCheckNow.onclick = async () => {
       if (settingsError) settingsError.textContent = '';
-      const run = async () => {
-        closeSettings(true);
+      if (sCheckNow) sCheckNow.disabled = true;
+      try {
         await checkQualityNow();
-      };
-      if (isDirty()) {
-        openConfirm(
-          'Закрыть настройки?',
-          'Проверка FLAC закроет форму, а несохранённые изменения пропадут.',
-          run,
-          'settings'
-        );
-      } else {
-        await run();
+      } catch (e) {
+        line('[error] ' + e, 'err');
+        if (settingsError) settingsError.textContent = String(e);
+      } finally {
+        if (sCheckNow) sCheckNow.disabled = qualityChecking || busy;
       }
     };
   }
@@ -1530,8 +1716,27 @@
     }
   }
   document.addEventListener('keydown', onKeyDown);
+  events('window-shown', () => { startBoot(); if (input) input.focus(); });
 
   // --- Init ---
+  if (boot) {
+    if (typeof setTimeout !== 'function') {
+      dismissBoot();
+    } else {
+      boot.classList.add('boot--armed');
+      const api = app();
+      if (api && typeof api.BootReady === 'function') {
+        try {
+          Promise.resolve(api.BootReady()).then(startBoot, startBoot);
+        } catch (e) {
+          startBoot();
+        }
+        setTimeout(startBoot, 1500);
+      } else {
+        startBoot();
+      }
+    }
+  }
   updateInputChrome();
   updateLogBadge();
   setQualityStatus('FLAC: проверок не было');
@@ -1544,6 +1749,7 @@
   window.__yamdl = {
     getState: () => uiState,
     isBusy: () => busy,
+    isBootDismissed: () => bootDismissed,
     parseTrackStatus,
     startDownload,
     stopDownload,
@@ -1552,10 +1758,16 @@
     answerDup,
     openSettings,
     closeQuality,
+    openQuality,
     openConfirm,
     closeConfirm,
+    renderQuality,
+    renderRejectedList,
+    rejectQualityItem,
+    undoRejected,
     getLastLink: () => lastLink,
     getQualityItems: () => qualityItems,
+    getRejectedItems: () => rejectedItems,
     jobReset,
     handleJobStart,
     handleJobEnd,

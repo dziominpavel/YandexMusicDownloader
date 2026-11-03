@@ -113,6 +113,8 @@ check('поле ссылки в фокусе', document.activeElement === regist
   document.activeElement && document.activeElement.id);
 check('статусбар скрыт до первой загрузки', registry['statusbar'].hidden === true,
   String(registry['statusbar'].hidden));
+check('заставка снята в тестовой среде', ctx.window.__yamdl.isBootDismissed() === true,
+  String(ctx.window.__yamdl.isBootDismissed()));
 
 console.log('scenario: human-readable track status');
 const parsedDone = ctx.window.__yamdl.parseTrackStatus('[done] (FLAC)');

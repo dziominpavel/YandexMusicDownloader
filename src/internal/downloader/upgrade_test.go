@@ -33,7 +33,7 @@ func TestUpgradeTarget(t *testing.T) {
 	}
 }
 
-func TestUpgradeDownloadsNextToOldFile(t *testing.T) {
+func TestUpgradeDownloadsToDestDir(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "tagger", "testdata", "flac.flac"))
 	if err != nil {
 		t.Fatal(err)
@@ -53,8 +53,9 @@ func TestUpgradeDownloadsNextToOldFile(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	dir := t.TempDir()
-	oldPath := filepath.Join(dir, "Artist - Song.mp3")
+	oldDir := t.TempDir()
+	destDir := t.TempDir()
+	oldPath := filepath.Join(oldDir, "Artist - Song.mp3")
 	if err := os.WriteFile(oldPath, []byte("old mp3"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -62,16 +63,19 @@ func TestUpgradeDownloadsNextToOldFile(t *testing.T) {
 	client.BaseURL = srv.URL
 	client.EmbedLyrics = false
 	track := &Track{ID: "42", Title: "Song", Artists: []string{"Artist"}}
-	res, err := client.Upgrade(context.Background(), track, oldPath, nil)
+	res, err := client.Upgrade(context.Background(), track, oldPath, destDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(dir, "Artist - Song.flac")
+	want := filepath.Join(destDir, "Artist - Song.flac")
 	if res.Path != want || res.Format != "FLAC" {
-		t.Fatalf("unexpected result: %+v", res)
+		t.Fatalf("unexpected result: %+v (want %s)", res, want)
 	}
 	if _, err := os.Stat(want); err != nil {
 		t.Fatalf("new FLAC missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(oldDir, "Artist - Song.flac")); !os.IsNotExist(err) {
+		t.Fatalf("new FLAC must not be published next to the old file: %v", err)
 	}
 	if _, err := os.Stat(oldPath); err != nil {
 		t.Fatalf("Upgrade must not move the old file itself: %v", err)
@@ -92,18 +96,19 @@ func TestUpgradeDestConflict(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	dir := t.TempDir()
-	oldPath := filepath.Join(dir, "Artist - Song.mp3")
+	oldDir := t.TempDir()
+	destDir := t.TempDir()
+	oldPath := filepath.Join(oldDir, "Artist - Song.mp3")
 	if err := os.WriteFile(oldPath, []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "Artist - Song.flac"), []byte("not a flac"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(destDir, "Artist - Song.flac"), []byte("not a flac"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	client := NewClient("t")
 	client.BaseURL = srv.URL
 	client.EmbedLyrics = false
-	_, err := client.Upgrade(context.Background(), &Track{ID: "42", Title: "Song", Artists: []string{"Artist"}}, oldPath, nil)
+	_, err := client.Upgrade(context.Background(), &Track{ID: "42", Title: "Song", Artists: []string{"Artist"}}, oldPath, destDir, nil)
 	if !errors.Is(err, ErrDestConflict) {
 		t.Fatalf("want ErrDestConflict, got %v", err)
 	}
@@ -112,15 +117,16 @@ func TestUpgradeDestConflict(t *testing.T) {
 func TestUpgradeNoLossless(t *testing.T) {
 	srv := qualityServer(t, 200, `{"result":{"downloadInfo":{"quality":"lossless","codec":"mp3"}}}`)
 	defer srv.Close()
-	dir := t.TempDir()
-	oldPath := filepath.Join(dir, "Artist - Song.mp3")
+	oldDir := t.TempDir()
+	destDir := t.TempDir()
+	oldPath := filepath.Join(oldDir, "Artist - Song.mp3")
 	if err := os.WriteFile(oldPath, []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	client := NewClient("t")
 	client.BaseURL = srv.URL
 	client.EmbedLyrics = false
-	_, err := client.Upgrade(context.Background(), &Track{ID: "42", Title: "Song", Artists: []string{"Artist"}}, oldPath, nil)
+	_, err := client.Upgrade(context.Background(), &Track{ID: "42", Title: "Song", Artists: []string{"Artist"}}, oldPath, destDir, nil)
 	if !errors.Is(err, ErrNoFLAC) {
 		t.Fatalf("want ErrNoFLAC, got %v", err)
 	}

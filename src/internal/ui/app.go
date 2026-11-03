@@ -73,6 +73,15 @@ type App struct {
 	envPath string
 	// cfg is the last applied configuration; source for GetSettings.
 	cfg config.Config
+	// validateToken checks a token against account/status. Tests replace it
+	// so startup never touches the network.
+	validateToken func(string) (string, error)
+	// tokenGen invalidates an in-flight startup check when settings are saved.
+	// Guarded by mu.
+	tokenGen int
+	// authErr is the last startup token error; empty when the token is valid
+	// or the check has not finished yet. Guarded by mu.
+	authErr string
 	// logFile is the diagnostic file log; nil means file logging is off.
 	logFile *applog.Logger
 	// logFileErr explains why file logging is off (nil when it works).
@@ -101,9 +110,11 @@ func (a *App) SetLogFileError(err error) {
 	a.logFileErr = err
 }
 
-// NewApp loads config and prepares the downloader.
+// NewApp loads config and prepares the downloader. It never validates the
+// token over the network: the window and the splash must appear first, and
+// Startup checks the token in the background.
 func NewApp() *App {
-	a := &App{outputDir: "./downloads"}
+	a := &App{outputDir: "./downloads", validateToken: config.Validate}
 	a.cfg = config.Config{
 		OutputDir: "./downloads", ConvertM4A: true, EmbedCover: true,
 		EmbedLyrics: true, SubdirTemplate: "%artist%/%album%",
@@ -120,7 +131,7 @@ func NewApp() *App {
 		a.ready = "config: " + err.Error()
 		return a
 	}
-	a.apply(cfg)
+	a.apply(cfg, false)
 	return a
 }
 
@@ -128,12 +139,20 @@ func NewApp() *App {
 // downloader client and the collection index. It is the single path used
 // both at startup and by SaveSettings (hot reload, no restart). Status
 // lines land in a.ready/a.readyNote for the caller to log.
-func (a *App) apply(cfg config.Config) {
+//
+// validate=false is the startup path: the client is created immediately and
+// the token is checked later in the background, so the window is never
+// blocked by a network call. validate=true keeps the settings-save behavior.
+func (a *App) apply(cfg config.Config, validate bool) {
 	a.cancelQualityCheck()
 	a.cfg = cfg
 	a.addLogSecret(cfg.Token)
 	a.ready = ""
 	a.readyNote = ""
+	a.mu.Lock()
+	a.tokenGen++
+	a.authErr = ""
+	a.mu.Unlock()
 	a.outputDir = "./downloads"
 	if cfg.OutputDir != "" {
 		a.outputDir = cfg.OutputDir
@@ -158,12 +177,31 @@ func (a *App) apply(cfg config.Config) {
 		a.ready = "токен пуст — доступно только 30-секундное превью; открой «⚙ Настройки → Как получить токен?»"
 		return
 	}
-	who, err := config.Validate(cfg.Token)
-	if err != nil {
-		a.client = nil
-		a.ready = "токен НЕ принят: " + err.Error()
+	if validate {
+		who, err := config.Validate(cfg.Token)
+		if err != nil {
+			a.client = nil
+			a.ready = "токен НЕ принят: " + err.Error()
+			a.mu.Lock()
+			a.authErr = a.ready
+			a.mu.Unlock()
+			return
+		}
+		c := a.newClient(cfg)
+		a.client = c
+		a.attachIndex(c)
+		a.ready = "токен ок: " + who
 		return
 	}
+	c := a.newClient(cfg)
+	a.client = c
+	a.attachIndex(c)
+	a.ready = "проверяю токен…"
+}
+
+// newClient builds the downloader client from the applied configuration.
+// It never touches the network; token validation is a separate step.
+func (a *App) newClient(cfg config.Config) *downloader.Client {
 	c := downloader.NewClient(cfg.Token)
 	c.ConvertM4A = cfg.ConvertM4A
 	c.EmbedLyrics = cfg.EmbedLyrics
@@ -172,9 +210,41 @@ func (a *App) apply(cfg config.Config) {
 	c.SubdirTemplate = cfg.SubdirTemplate
 	c.PlaylistWorkers = cfg.Workers
 	c.Tag = tagger.Adapter(cfg.EmbedCover)
-	a.client = c
-	a.attachIndex(c)
-	a.ready = "токен ок: " + who
+	return c
+}
+
+// verifyStartupToken validates the token after the window is visible and
+// records the error for Download/PreviewLink. A result from an older
+// configuration is ignored, so saving settings mid-check cannot resurrect it.
+func (a *App) verifyStartupToken(token string, gen int) {
+	check := a.validateToken
+	if check == nil {
+		check = config.Validate
+	}
+	who, err := check(token)
+
+	a.mu.Lock()
+	if gen != a.tokenGen {
+		a.mu.Unlock()
+		return
+	}
+	if err != nil {
+		a.authErr = "токен НЕ принят: " + err.Error()
+		msg := a.authErr
+		a.mu.Unlock()
+		a.log(msg, "error")
+		return
+	}
+	a.authErr = ""
+	a.mu.Unlock()
+	a.log("токен ок: "+who, "info")
+}
+
+// authError returns the last startup token error, if any.
+func (a *App) authError() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.authErr
 }
 
 // attachIndex makes every freshly published file part of the collection
@@ -313,6 +383,12 @@ func (a *App) Startup(ctx context.Context) {
 	if a.readyNote != "" {
 		a.log(a.readyNote, "info")
 	}
+	if token := a.cfg.Token; token != "" {
+		a.mu.Lock()
+		gen := a.tokenGen
+		a.mu.Unlock()
+		go a.verifyStartupToken(token, gen)
+	}
 	if a.index != nil {
 		// Полное сканирование — в фоне: окно живое, ход в логе.
 		go func() {
@@ -329,6 +405,23 @@ func (a *App) Startup(ctx context.Context) {
 		<-ctx.Done()
 		a.cancelQualityCheck()
 	}()
+}
+
+// DomReady shows the window once the frontend is loaded. The window starts
+// hidden so the splash is not played while WebView2 is still invisible;
+// showing it here makes the first visible frame the splash.
+func (a *App) DomReady(ctx context.Context) {
+	runtime.WindowShow(ctx)
+	runtime.EventsEmit(ctx, "window-shown")
+}
+
+// BootReady shows the window after the frontend has armed the splash. The
+// binding is called before the animation starts, so the window never spends
+// its first visible second on the splash timer running in the background.
+func (a *App) BootReady() {
+	if a.ctx != nil {
+		runtime.WindowShow(a.ctx)
+	}
 }
 
 // Default window size for a first launch, i.e. when .env carries no
@@ -611,6 +704,9 @@ func splitLinks(input string) []string {
 // awaits it while live log and progress events arrive. Supports multiple
 // links separated by whitespace/comma/semicolon.
 func (a *App) Download(link string) string {
+	if msg := a.authError(); msg != "" {
+		return "[error] " + msg
+	}
 	if a.client == nil {
 		return "[error] нет токена: доступно только 30-секундное превью. Открой «⚙ Настройки → Как получить токен?»"
 	}
@@ -986,6 +1082,9 @@ type Preview struct {
 // PreviewLink resolves a pasted link just enough to show a cover and a
 // title. It never downloads audio and never blocks «Скачать».
 func (a *App) PreviewLink(link string) (Preview, error) {
+	if msg := a.authError(); msg != "" {
+		return Preview{}, errors.New(msg)
+	}
 	if a.client == nil {
 		return Preview{}, fmt.Errorf("нет токена")
 	}
@@ -1100,6 +1199,7 @@ type Settings struct {
 	QualityText     string
 	QualityChecking bool
 	QualityPending  int
+	QualityRejected []quality.DeclinedItem
 }
 
 // GetSettings returns the currently applied configuration with defaults
@@ -1123,6 +1223,10 @@ func (a *App) GetSettings() (Settings, error) {
 		subdirTemplate = "%artist%/%album%"
 	}
 	qs := a.qualityStatusView()
+	var rejected []quality.DeclinedItem
+	if a.qualityJournal != nil {
+		rejected = a.qualityJournal.DeclinedList()
+	}
 	return Settings{
 		Token:           cfg.Token,
 		OutputDir:       out,
@@ -1139,6 +1243,7 @@ func (a *App) GetSettings() (Settings, error) {
 		QualityText:     qs.Text,
 		QualityChecking: qs.Checking,
 		QualityPending:  qs.Pending,
+		QualityRejected: rejected,
 	}, nil
 }
 
@@ -1212,7 +1317,7 @@ func (a *App) SaveSettings(s Settings) error {
 		ExportM3U:      s.ExportM3U,
 		FlacMonitor:    s.FlacMonitor,
 	}
-	a.apply(cfg)
+	a.apply(cfg, true)
 	if a.ready != "" {
 		a.log(a.ready, "info")
 	}

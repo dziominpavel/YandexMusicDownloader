@@ -329,10 +329,10 @@ func (c *Client) downloadLossless(track *Track, outputDir string, uid int64, onP
 	return c.downloadLosslessTo(track, info, dest, format, streamFormat, ffmpeg, onProgress)
 }
 
-// Upgrade downloads lossless next to oldPath, keeping its stem and
-// directory. It does not move or delete oldPath; the quality upgrader
-// owns the _old policy.
-func (c *Client) Upgrade(ctx context.Context, track *Track, oldPath string, onProgress ProgressFunc) (Result, error) {
+// Upgrade downloads lossless into destDir using the normal download
+// naming (SUBDIRS included). oldPath is needed only to detect an
+// existing lossless copy; the quality upgrader owns the _old policy.
+func (c *Client) Upgrade(ctx context.Context, track *Track, oldPath, destDir string, onProgress ProgressFunc) (Result, error) {
 	if track == nil || strings.TrimSpace(track.ID) == "" {
 		return Result{}, fmt.Errorf("downloader: upgrade: empty track")
 	}
@@ -352,8 +352,7 @@ func (c *Client) Upgrade(ctx context.Context, track *Track, oldPath string, onPr
 		ffmpeg = findFFmpeg()
 	}
 	ext, format, streamFormat := upgradeTarget(info.Codec, c.ConvertM4A, ffmpeg != "")
-	stem := strings.TrimSuffix(oldPath, filepath.Ext(oldPath))
-	dest := stem + ext
+	dest := c.destPath(destDir, track, ext)
 	if dest == oldPath {
 		return Result{Path: dest, Format: format}, fmt.Errorf("%w: %s", ErrAlreadyExists, dest)
 	}

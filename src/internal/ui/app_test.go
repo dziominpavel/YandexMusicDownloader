@@ -93,7 +93,7 @@ func TestDownloadWithoutToken(t *testing.T) {
 
 func TestReadyWithoutTokenMentionsHelp(t *testing.T) {
 	a := &App{envPath: filepath.Join(t.TempDir(), ".env")}
-	a.apply(config.Config{OutputDir: t.TempDir()})
+	a.apply(config.Config{OutputDir: t.TempDir()}, false)
 	for _, want := range []string{"30-секундное превью", "Настройки", "Как получить токен"} {
 		if !strings.Contains(a.ready, want) {
 			t.Errorf("startup status must contain %q, got %q", want, a.ready)

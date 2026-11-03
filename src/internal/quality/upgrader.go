@@ -29,8 +29,9 @@ type IndexUpdater interface {
 	AddFile(path string)
 }
 
-// UpgradeFunc downloads lossless next to oldPath.
-type UpgradeFunc func(ctx context.Context, track *downloader.Track, oldPath string, onProgress downloader.ProgressFunc) (downloader.Result, error)
+// UpgradeFunc downloads lossless into destDir; oldPath only identifies
+// the file being upgraded.
+type UpgradeFunc func(ctx context.Context, track *downloader.Track, oldPath, destDir string, onProgress downloader.ProgressFunc) (downloader.Result, error)
 
 // Upgrader runs the selected upgrades as a normal stoppable job.
 type Upgrader struct {
@@ -173,7 +174,7 @@ func (u *Upgrader) upgradeOne(it FoundItem, emit func(downloader.Event), onProgr
 		p.TrackID = it.Key
 		onProgress(p)
 	}
-	res, err := u.Upgrade(u.Client.JobContext(), track, it.Path, progress)
+	res, err := u.Upgrade(u.Client.JobContext(), track, it.Path, u.OutputDir, progress)
 	if err != nil {
 		if errors.Is(err, downloader.ErrStopped) || u.Client.Stopped() {
 			emit(downloader.Event{Kind: downloader.KindStopped, Label: track.Label(), TrackID: it.Key})
@@ -218,7 +219,7 @@ func (u *Upgrader) upgradeOne(it FoundItem, emit func(downloader.Event), onProgr
 		if target, moveErr := u.moveToOld(it.Path); moveErr != nil {
 			u.logf("[warn] не удалось переместить %s в _old: %v", it.Label, moveErr)
 		} else {
-			u.logf("[upgrade] %s: MP3 → %s; старый файл: %s", track.Label(), res.Format, target)
+			u.logf("[upgrade] %s: MP3 → %s; новый файл: %s; старый файл: %s", track.Label(), res.Format, res.Path, target)
 		}
 	}
 	u.removeIndex(it.Path)
@@ -309,7 +310,28 @@ func (u *Upgrader) moveToOld(oldPath string) (string, error) {
 	if err := os.Rename(oldPath, target); err != nil {
 		return "", err
 	}
+	u.moveSidecarToOld(oldPath, target)
 	return target, nil
+}
+
+// moveSidecarToOld keeps the old synchronized lyrics next to the
+// archived MP3. It is best-effort: a locked .lrc must not fail the job.
+func (u *Upgrader) moveSidecarToOld(oldPath, oldTarget string) {
+	src := strings.TrimSuffix(oldPath, filepath.Ext(oldPath)) + ".lrc"
+	if _, err := os.Stat(src); err != nil {
+		return
+	}
+	dst := strings.TrimSuffix(oldTarget, filepath.Ext(oldTarget)) + ".lrc"
+	if _, err := os.Stat(dst); err == nil {
+		dst = uniqueOldPath(dst, u.now())
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		u.logf("[warn] не удалось переместить %s в _old: %v", filepath.Base(src), err)
+		return
+	}
+	if err := os.Rename(src, dst); err != nil {
+		u.logf("[warn] не удалось переместить %s в _old: %v", filepath.Base(src), err)
+	}
 }
 
 func (u *Upgrader) rootFor(path string) string {

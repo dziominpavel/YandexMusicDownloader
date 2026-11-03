@@ -72,6 +72,24 @@ func TestPendingPreselectionAndAlreadyFlac(t *testing.T) {
 	}
 }
 
+func TestPendingDeclinedAlreadyFlacIsSkipped(t *testing.T) {
+	now := testTime()
+	path := `c:\music\b.mp3`
+	flacPath := `c:\music\b.flac`
+	j := NewJournal("")
+	j.Put("file:"+path, Entry{
+		Status: StatusLossless, MatchSource: "search", MatchedTrackID: "42",
+	})
+	j.Decline(path, Declined{TrackID: "42", DeclinedAt: now})
+	entries := []library.Entry{
+		{Path: path, Ext: ".mp3", Artists: "Artist", Title: "Song", Matchable: true},
+		{Path: flacPath, Ext: ".flac", TrackID: "42", Artists: "Artist", Title: "Song", Matchable: true},
+	}
+	if got := Pending(entries, j, now, FormatOptions{}); len(got) != 0 {
+		t.Fatalf("declined match must hide the existing-FLAC offer too: %+v", got)
+	}
+}
+
 func TestPendingDeclinedIsSkipped(t *testing.T) {
 	now := testTime()
 	path := `c:\music\b.mp3`
@@ -80,9 +98,15 @@ func TestPendingDeclinedIsSkipped(t *testing.T) {
 		Status: StatusLossless, MatchSource: "search",
 		MatchedTrackID: "42", Exact: true,
 	})
-	j.Decline(path, "42", now)
+	j.Decline(path, Declined{TrackID: "42", DeclinedAt: now})
 	entries := []library.Entry{{Path: path, Ext: ".mp3", Artists: "Artist", Title: "Song", Matchable: true}}
 	if got := Pending(entries, j, now, FormatOptions{}); len(got) != 0 {
 		t.Fatalf("declined match must not be pending: %+v", got)
+	}
+	if _, ok := j.Undecline(path, "42"); !ok {
+		t.Fatal("undo must find the rejection")
+	}
+	if got := Pending(entries, j, now, FormatOptions{}); len(got) != 1 {
+		t.Fatalf("undone match must be pending again: %+v", got)
 	}
 }

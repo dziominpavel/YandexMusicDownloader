@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -96,15 +97,128 @@ func TestJournalCorruptIsEmpty(t *testing.T) {
 func TestJournalDeclined(t *testing.T) {
 	j := NewJournal("")
 	now := testTime()
-	j.Decline(`c:\music\a.mp3`, "123", now)
-	if !j.IsDeclined(`c:\music\a.mp3`, "123", now.Add(time.Hour)) {
+	path := `c:\music\a.mp3`
+	j.Decline(path, Declined{TrackID: "123", MatchedTitle: "Song", DeclinedAt: now})
+	if !j.IsDeclined(path, "123") {
 		t.Fatal("declined match must be remembered")
 	}
-	if j.IsDeclined(`c:\music\a.mp3`, "456", now) {
+	if j.IsDeclined(path, "456") {
 		t.Fatal("another candidate must not be declined")
 	}
-	if j.IsDeclined(`c:\music\a.mp3`, "123", now.Add(DeclinedTTL)) {
-		t.Fatal("decline must expire")
+	if !j.IsDeclined(path, "123") {
+		t.Fatal("decline must not expire")
+	}
+
+	j.Decline(path, Declined{TrackID: "456", DeclinedAt: now.Add(time.Hour)})
+	if !j.IsDeclined(path, "123") || !j.IsDeclined(path, "456") {
+		t.Fatal("both rejected candidates must be kept")
+	}
+	j.Decline(path, Declined{TrackID: "123", MatchedTitle: "Updated", DeclinedAt: now.Add(2 * time.Hour)})
+	list := j.DeclinedList()
+	if len(list) != 2 {
+		t.Fatalf("want two rejections, got %+v", list)
+	}
+	if list[0].TrackID != "123" || list[0].MatchedTitle != "Updated" {
+		t.Fatalf("newest rejection must replace the old one: %+v", list)
+	}
+
+	d, ok := j.Undecline(path, "123")
+	if !ok || d.TrackID != "123" || d.MatchedTitle != "Updated" {
+		t.Fatalf("undo must return the stored rejection: %+v ok=%v", d, ok)
+	}
+	if j.IsDeclined(path, "123") {
+		t.Fatal("undone rejection must be gone")
+	}
+	if !j.IsDeclined(path, "456") {
+		t.Fatal("undo must not remove another candidate")
+	}
+}
+
+func TestJournalRejectionsSurvivePlusAndPrune(t *testing.T) {
+	j := NewJournal("")
+	path := `c:\music\a.mp3`
+	j.SetAccount(1, false)
+	j.Decline(path, Declined{TrackID: "42", DeclinedAt: testTime()})
+	if !j.SetAccount(1, true) {
+		t.Fatal("false→true Plus transition must reset entries")
+	}
+	if !j.IsDeclined(path, "42") {
+		t.Fatal("Plus transition must keep rejections")
+	}
+	if !j.SetAccount(2, true) {
+		t.Fatal("changed uid must reset the journal")
+	}
+	if j.IsDeclined(path, "42") {
+		t.Fatal("changed uid must clear rejections")
+	}
+
+	j.Decline(path, Declined{TrackID: "42", DeclinedAt: testTime()})
+	j.Prune(map[string]bool{}, map[string]bool{})
+	if j.IsDeclined(path, "42") {
+		t.Fatal("prune must drop rejections for missing local files")
+	}
+}
+
+func TestJournalDeclinedPersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "flac-quality.json")
+	now := testTime()
+	j := NewJournal(path)
+	j.Decline(`c:\music\a.mp3`, Declined{
+		TrackID: "42", LocalLabel: "Artist - Song.mp3",
+		MatchedArtist: "Artist", MatchedTitle: "Song (Remix)",
+		DeclinedAt: now,
+	})
+	j.Save()
+
+	loaded := NewJournal(path)
+	if !loaded.IsDeclined(`c:\music\a.mp3`, "42") {
+		t.Fatal("rejection must survive a reload")
+	}
+	list := loaded.DeclinedList()
+	if len(list) != 1 || list[0].MatchedTitle != "Song (Remix)" {
+		t.Fatalf("rejection metadata lost: %+v", list)
+	}
+}
+
+func TestJournalMigratesV1(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "flac-quality.json")
+	raw := `{
+		"version": 1,
+		"entries": {
+			"file:c:\\music\\a.mp3": {
+				"status": "lossless",
+				"codec": "flac",
+				"match_source": "search",
+				"matched_track_id": "42",
+				"matched_artist": "Artist",
+				"matched_title": "Song"
+			}
+		},
+		"declined": {
+			"c:\\music\\a.mp3": {"track_id": "42", "until": "2099-01-01T00:00:00Z"},
+			"c:\\music\\old.mp3": {"track_id": "7", "until": "2000-01-01T00:00:00Z"}
+		}
+	}`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	j := NewJournal(path)
+	if !j.IsDeclined(`c:\music\a.mp3`, "42") {
+		t.Fatal("active v1 rejection must migrate")
+	}
+	if j.IsDeclined(`c:\music\old.mp3`, "7") {
+		t.Fatal("expired v1 rejection must be dropped")
+	}
+	list := j.DeclinedList()
+	if len(list) != 1 || list[0].MatchedArtist != "Artist" || list[0].MatchedTitle != "Song" {
+		t.Fatalf("v1 metadata must migrate from the file entry: %+v", list)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(saved), `"version":2`) {
+		t.Fatalf("migrated journal must be written as v2: %s", saved)
 	}
 }
 

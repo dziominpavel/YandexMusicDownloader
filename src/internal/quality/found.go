@@ -76,6 +76,11 @@ func Pending(entries []library.Entry, j *Journal, now time.Time, opts FormatOpti
 		if j != nil {
 			je, has = j.Get(key)
 		}
+		// A rejected search match must stay hidden even when a FLAC with
+		// the same Yandex ID already exists in the collection.
+		if has && j != nil && j.IsDeclined(e.Path, je.MatchedTrackID) {
+			continue
+		}
 
 		matchID := e.TrackID
 		if matchID == "" && has {
@@ -102,9 +107,6 @@ func Pending(entries []library.Entry, j *Journal, now time.Time, opts FormatOpti
 			continue
 		}
 		if !has || je.Status != StatusLossless {
-			continue
-		}
-		if j != nil && j.IsDeclined(e.Path, je.MatchedTrackID, now) {
 			continue
 		}
 

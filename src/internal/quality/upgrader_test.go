@@ -31,13 +31,25 @@ func (f *fakeUpgradeClient) ResolveTrack(string) (*downloader.Track, error) {
 
 func newTestUpgrader(t *testing.T, dir string, upgrade UpgradeFunc) (*Upgrader, *library.Index, *Journal) {
 	t.Helper()
-	ix := library.New(filepath.Join(t.TempDir(), "cache.json"), dir)
+	return newTestUpgraderRoots(t, "", dir, upgrade)
+}
+
+func newTestUpgraderRoots(t *testing.T, libDir, outDir string, upgrade UpgradeFunc) (*Upgrader, *library.Index, *Journal) {
+	t.Helper()
+	var roots []string
+	if libDir != "" {
+		roots = append(roots, libDir)
+	}
+	if outDir != "" {
+		roots = append(roots, outDir)
+	}
+	ix := library.New(filepath.Join(t.TempDir(), "cache.json"), roots...)
 	ix.Refresh(nil)
 	j := NewJournal("")
 	client := &fakeUpgradeClient{track: &downloader.Track{ID: "42", Title: "Song", Artists: []string{"Artist"}}}
 	u := &Upgrader{
 		Client: client, Upgrade: upgrade, Index: ix, Journal: j,
-		OutputDir: dir, Workers: 1,
+		LibraryDir: libDir, OutputDir: outDir, Workers: 1,
 		Now: func() time.Time { return testTime() },
 	}
 	return u, ix, j
@@ -67,9 +79,9 @@ func TestUpgraderSuccessMovesOld(t *testing.T) {
 	writeOld(t, old)
 	var upgrades int
 	var logs []string
-	u, ix, j := newTestUpgrader(t, dir, func(_ context.Context, _ *downloader.Track, oldPath string, _ downloader.ProgressFunc) (downloader.Result, error) {
+	u, ix, j := newTestUpgrader(t, dir, func(_ context.Context, _ *downloader.Track, _ string, destDir string, _ downloader.ProgressFunc) (downloader.Result, error) {
 		upgrades++
-		newPath := strings.TrimSuffix(oldPath, ".mp3") + ".flac"
+		newPath := filepath.Join(destDir, "Artist - Song.flac")
 		if err := os.WriteFile(newPath, []byte("new"), 0o644); err != nil {
 			return downloader.Result{}, err
 		}
@@ -105,11 +117,56 @@ func TestUpgraderSuccessMovesOld(t *testing.T) {
 	}
 }
 
+func TestUpgraderLibraryFileGoesToOutputDir(t *testing.T) {
+	libDir := t.TempDir()
+	outDir := t.TempDir()
+	old := filepath.Join(libDir, "Artist - Song.mp3")
+	writeOld(t, old)
+	lrc := filepath.Join(libDir, "Artist - Song.lrc")
+	if err := os.WriteFile(lrc, []byte("[00:01.00]line"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	u, ix, _ := newTestUpgraderRoots(t, libDir, outDir, func(_ context.Context, _ *downloader.Track, _ string, destDir string, _ downloader.ProgressFunc) (downloader.Result, error) {
+		newPath := filepath.Join(destDir, "Artist - Song.flac")
+		if err := os.WriteFile(newPath, []byte("new"), 0o644); err != nil {
+			return downloader.Result{}, err
+		}
+		return downloader.Result{Path: newPath, Format: "FLAC"}, nil
+	})
+	ix.AddFile(old)
+
+	sum := u.Run([]FoundItem{foundItem(libDir, "Artist - Song.mp3")}, nil, nil)
+	if sum.OK != 1 {
+		t.Fatalf("summary=%+v", sum)
+	}
+	want := filepath.Join(outDir, "Artist - Song.flac")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("new FLAC must be in OUTPUT_DIR: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(libDir, "Artist - Song.flac")); !os.IsNotExist(err) {
+		t.Fatal("new FLAC must not be published in LIBRARY_DIR")
+	}
+	if _, err := os.Stat(filepath.Join(libDir, "_old", "Artist - Song.mp3")); err != nil {
+		t.Fatalf("old MP3 must be in LIBRARY_DIR/_old: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(libDir, "_old", "Artist - Song.lrc")); err != nil {
+		t.Fatalf("old .lrc must move to LIBRARY_DIR/_old: %v", err)
+	}
+	if _, err := os.Stat(lrc); !os.IsNotExist(err) {
+		t.Fatal("old .lrc must leave the library root")
+	}
+	for _, e := range ix.Snapshot() {
+		if e.Path == old {
+			t.Fatal("index must drop the moved MP3")
+		}
+	}
+}
+
 func TestUpgraderFallbackDoesNotMove(t *testing.T) {
 	dir := t.TempDir()
 	old := filepath.Join(dir, "Artist - Song.mp3")
 	writeOld(t, old)
-	u, _, j := newTestUpgrader(t, dir, func(_ context.Context, _ *downloader.Track, _ string, _ downloader.ProgressFunc) (downloader.Result, error) {
+	u, _, j := newTestUpgrader(t, dir, func(_ context.Context, _ *downloader.Track, _ string, _ string, _ downloader.ProgressFunc) (downloader.Result, error) {
 		return downloader.Result{Fallback: true, Format: "MP3"}, nil
 	})
 	sum := u.Run([]FoundItem{foundItem(dir, "Artist - Song.mp3")}, nil, nil)
@@ -131,7 +188,7 @@ func TestUpgraderNoFLACDoesNotMove(t *testing.T) {
 	dir := t.TempDir()
 	old := filepath.Join(dir, "Artist - Song.mp3")
 	writeOld(t, old)
-	u, _, j := newTestUpgrader(t, dir, func(_ context.Context, _ *downloader.Track, _ string, _ downloader.ProgressFunc) (downloader.Result, error) {
+	u, _, j := newTestUpgrader(t, dir, func(_ context.Context, _ *downloader.Track, _ string, _ string, _ downloader.ProgressFunc) (downloader.Result, error) {
 		return downloader.Result{}, downloader.ErrNoFLAC
 	})
 	sum := u.Run([]FoundItem{foundItem(dir, "Artist - Song.mp3")}, nil, nil)
@@ -154,7 +211,7 @@ func TestUpgraderAlreadyFlacOnlyMoves(t *testing.T) {
 	writeOld(t, flac)
 	var upgrades int
 	var logs []string
-	u, _, _ := newTestUpgrader(t, dir, func(_ context.Context, _ *downloader.Track, _ string, _ downloader.ProgressFunc) (downloader.Result, error) {
+	u, _, _ := newTestUpgrader(t, dir, func(_ context.Context, _ *downloader.Track, _ string, _ string, _ downloader.ProgressFunc) (downloader.Result, error) {
 		upgrades++
 		return downloader.Result{}, nil
 	})
@@ -188,8 +245,8 @@ func TestUpgraderOldCollision(t *testing.T) {
 	if err := os.WriteFile(existing, []byte("previous"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	u, _, _ := newTestUpgrader(t, dir, func(_ context.Context, _ *downloader.Track, oldPath string, _ downloader.ProgressFunc) (downloader.Result, error) {
-		newPath := strings.TrimSuffix(oldPath, ".mp3") + ".flac"
+	u, _, _ := newTestUpgrader(t, dir, func(_ context.Context, _ *downloader.Track, _ string, destDir string, _ downloader.ProgressFunc) (downloader.Result, error) {
+		newPath := filepath.Join(destDir, "Artist - Song.flac")
 		_ = os.WriteFile(newPath, []byte("new"), 0o644)
 		return downloader.Result{Path: newPath, Format: "FLAC"}, nil
 	})
@@ -211,7 +268,7 @@ func TestUpgraderStopLeavesOld(t *testing.T) {
 	dir := t.TempDir()
 	old := filepath.Join(dir, "Artist - Song.mp3")
 	writeOld(t, old)
-	u, _, _ := newTestUpgrader(t, dir, func(_ context.Context, _ *downloader.Track, _ string, _ downloader.ProgressFunc) (downloader.Result, error) {
+	u, _, _ := newTestUpgrader(t, dir, func(_ context.Context, _ *downloader.Track, _ string, _ string, _ downloader.ProgressFunc) (downloader.Result, error) {
 		return downloader.Result{}, downloader.ErrStopped
 	})
 	it := foundItem(dir, "Artist - Song.mp3")
@@ -228,7 +285,7 @@ func TestUpgraderStopKeepsPendingForResume(t *testing.T) {
 	dir := t.TempDir()
 	old := filepath.Join(dir, "Artist - Song.mp3")
 	writeOld(t, old)
-	u, ix, j := newTestUpgrader(t, dir, func(_ context.Context, _ *downloader.Track, _ string, _ downloader.ProgressFunc) (downloader.Result, error) {
+	u, ix, j := newTestUpgrader(t, dir, func(_ context.Context, _ *downloader.Track, _ string, _ string, _ downloader.ProgressFunc) (downloader.Result, error) {
 		return downloader.Result{}, downloader.ErrStopped
 	})
 	ix.AddFile(old)
@@ -241,8 +298,8 @@ func TestUpgraderStopKeepsPendingForResume(t *testing.T) {
 		t.Fatalf("stopped item must stay pending: %+v", pending)
 	}
 
-	u.Upgrade = func(_ context.Context, _ *downloader.Track, oldPath string, _ downloader.ProgressFunc) (downloader.Result, error) {
-		newPath := strings.TrimSuffix(oldPath, ".mp3") + ".flac"
+	u.Upgrade = func(_ context.Context, _ *downloader.Track, _ string, destDir string, _ downloader.ProgressFunc) (downloader.Result, error) {
+		newPath := filepath.Join(destDir, "Artist - Song.flac")
 		_ = os.WriteFile(newPath, []byte("new"), 0o644)
 		return downloader.Result{Path: newPath, Format: "FLAC"}, nil
 	}

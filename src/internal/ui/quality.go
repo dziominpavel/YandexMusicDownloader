@@ -4,20 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"yamdl/internal/downloader"
 	"yamdl/internal/quality"
 )
 
-// QualityStatusView is the compact line shown in the main window and the
-// status section of the settings window.
+// QualityStatusView is the status line shown in the settings window.
 type QualityStatusView struct {
-	Text     string `json:"text"`
-	Checking bool   `json:"checking"`
-	Pending  int    `json:"pending"`
-	Found    int    `json:"found"`
-	Error    string `json:"error,omitempty"`
+	Text      string `json:"text"`
+	Checking  bool   `json:"checking"`
+	Pending   int    `json:"pending"`
+	Found     int    `json:"found"`
+	OutputDir string `json:"outputDir"`
+	Error     string `json:"error,omitempty"`
 }
 
 // QualityStatus returns the current monitor state. The frontend calls it
@@ -37,10 +38,11 @@ func (a *App) qualityStatusView() QualityStatusView {
 		st = a.qualityJournal.Status()
 	}
 	view := QualityStatusView{
-		Checking: checking,
-		Pending:  pending,
-		Found:    st.Found,
-		Error:    st.Error,
+		Checking:  checking,
+		Pending:   pending,
+		Found:     st.Found,
+		OutputDir: a.outputDir,
+		Error:     st.Error,
 	}
 	last := st.LastAttempt
 	if last.IsZero() {
@@ -115,19 +117,23 @@ func (a *App) runQualityCheck() (quality.Result, error) {
 	a.checking = true
 	a.checkCancel = cancel
 	a.qualityMu.Unlock()
-	defer func() {
+	finish := func() {
 		cancel()
 		a.qualityMu.Lock()
 		a.checking = false
 		a.checkCancel = nil
 		a.qualityMu.Unlock()
-	}()
+	}
+	defer finish()
 
 	chk.Progress = func(done, total int) { a.emit("quality-check-progress", done, total) }
 	a.emit("quality-check-started")
 	res, err := chk.Check(ctx)
 	a.storeFound(res.Found)
 
+	// Clear the running flag before rendering the result: otherwise the
+	// finished event carries "проверка идёт…" forever.
+	finish()
 	status := a.qualityStatusView()
 	if errors.Is(err, context.Canceled) {
 		a.log("[flac] проверка отменена", "info")
@@ -217,6 +223,140 @@ func (a *App) PendingFound() []quality.FoundItem {
 	return out
 }
 
+// RejectFound explicitly rejects a search match. The local MP3 is not
+// touched: its lossless check entry is removed so the next check can look
+// for another version.
+func (a *App) RejectFound(item quality.FoundItem) ([]quality.FoundItem, error) {
+	if a.isBusy() {
+		return nil, fmt.Errorf("идёт скачивание — отклонение недоступно")
+	}
+	if a.qualityJournal == nil {
+		return nil, fmt.Errorf("журнал проверок недоступен")
+	}
+	if item.MatchSource != "search" {
+		return nil, fmt.Errorf("ID-совпадение нельзя отклонить")
+	}
+	if strings.TrimSpace(item.Path) == "" || strings.TrimSpace(item.TrackID) == "" {
+		return nil, fmt.Errorf("не удалось определить совпадение")
+	}
+
+	// Keep qualityMu across validation and the journal update: starting a
+	// check would otherwise race with the rejection.
+	a.qualityMu.Lock()
+	if a.checking {
+		a.qualityMu.Unlock()
+		return nil, fmt.Errorf("идёт проверка — дождитесь завершения")
+	}
+	current := false
+	for _, it := range a.found {
+		if it.Path == item.Path && it.TrackID == item.TrackID && it.MatchSource == "search" {
+			current = true
+			break
+		}
+	}
+	if !current {
+		a.qualityMu.Unlock()
+		return nil, fmt.Errorf("совпадение уже изменилось — обновите список")
+	}
+	d, ok := a.declineFound(item, time.Now())
+	if ok {
+		a.qualityJournal.Save()
+	}
+	a.qualityMu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("не удалось сохранить отклонение")
+	}
+	a.log(fmt.Sprintf("[reject] %s: %s — больше не предлагать", d.LocalLabel, declinedCandidate(d)), "info")
+
+	a.refreshPendingQuality()
+	remaining := a.PendingFound()
+	a.emit("quality-pending", remaining)
+	return remaining, nil
+}
+
+// UndoReject removes one rejection. When the stored metadata is complete,
+// the original lossless offer is restored immediately without a network
+// call; otherwise the next check will find it again.
+func (a *App) UndoReject(path, trackID string) ([]quality.FoundItem, error) {
+	if a.isBusy() {
+		return nil, fmt.Errorf("идёт скачивание — возврат недоступен")
+	}
+	if a.qualityJournal == nil {
+		return nil, fmt.Errorf("журнал проверок недоступен")
+	}
+	if strings.TrimSpace(path) == "" || strings.TrimSpace(trackID) == "" {
+		return nil, fmt.Errorf("не удалось определить совпадение")
+	}
+
+	a.qualityMu.Lock()
+	if a.checking {
+		a.qualityMu.Unlock()
+		return nil, fmt.Errorf("идёт проверка — дождитесь завершения")
+	}
+	d, ok := a.qualityJournal.Undecline(path, trackID)
+	if ok {
+		if d.MatchedArtist != "" || d.MatchedTitle != "" || d.Codec != "" {
+			a.qualityJournal.Put("file:"+path, quality.Entry{
+				Status: quality.StatusLossless, Codec: d.Codec, CheckedAt: d.DeclinedAt,
+				MatchSource: "search", MatchedTrackID: d.TrackID,
+				MatchedArtist: d.MatchedArtist, MatchedTitle: d.MatchedTitle,
+				MatchedAlbum: d.MatchedAlbum, MatchedYear: d.MatchedYear,
+				Confidence: d.Confidence, Exact: d.Exact,
+			})
+		}
+		a.qualityJournal.Save()
+	}
+	a.qualityMu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("отклонение не найдено")
+	}
+	a.log(fmt.Sprintf("[reject] %s: %s — возвращено", d.LocalLabel, declinedCandidate(d)), "info")
+
+	a.refreshPendingQuality()
+	remaining := a.PendingFound()
+	a.emit("quality-pending", remaining)
+	return remaining, nil
+}
+
+// declineFound stores one rejection and clears the file's lossless entry.
+// The caller saves the journal.
+func (a *App) declineFound(it quality.FoundItem, now time.Time) (quality.Declined, bool) {
+	if a.qualityJournal == nil || it.MatchSource != "search" || strings.TrimSpace(it.TrackID) == "" {
+		return quality.Declined{}, false
+	}
+	local := strings.TrimSpace(it.Label)
+	if local == "" {
+		local = strings.TrimSpace(it.FileName)
+	}
+	if local == "" {
+		local = it.Path
+	}
+	d := quality.Declined{
+		TrackID: it.TrackID, LocalLabel: local,
+		MatchedArtist: it.MatchedArtist, MatchedTitle: it.MatchedTitle,
+		MatchedAlbum: it.Album, MatchedYear: it.Year,
+		Confidence: it.Confidence, Exact: it.Selected,
+		Codec: it.Codec, DeclinedAt: now,
+	}
+	if je, ok := a.qualityJournal.Get("file:" + it.Path); ok {
+		d.Exact = je.Exact
+		if d.Codec == "" {
+			d.Codec = je.Codec
+		}
+	}
+	a.qualityJournal.Decline(it.Path, d)
+	a.qualityJournal.Forget("file:" + it.Path)
+	return d, true
+}
+
+func declinedCandidate(d quality.Declined) string {
+	label := strings.TrimSpace(strings.TrimSpace(d.MatchedArtist) + " — " + strings.TrimSpace(d.MatchedTitle))
+	if label == "" || label == "—" {
+		return d.TrackID
+	}
+	return label
+}
+
 // DownloadFound runs the selected upgrades as a normal stoppable job.
 func (a *App) DownloadFound(items []quality.FoundItem) error {
 	if len(items) == 0 {
@@ -268,14 +408,21 @@ func (a *App) DownloadFound(items []quality.FoundItem) error {
 	for _, it := range items {
 		selected[it.Path] = true
 	}
+	var declined []quality.FoundItem
 	a.qualityMu.Lock()
 	for _, it := range a.found {
-		if !selected[it.Path] && it.MatchSource == "search" && it.TrackID != "" && a.qualityJournal != nil {
-			a.qualityJournal.Decline(it.Path, it.TrackID, time.Now())
+		if !selected[it.Path] && it.MatchSource == "search" && it.TrackID != "" {
+			declined = append(declined, it)
 		}
 	}
 	a.qualityMu.Unlock()
 	if a.qualityJournal != nil {
+		now := time.Now()
+		for _, it := range declined {
+			if d, ok := a.declineFound(it, now); ok {
+				a.log(fmt.Sprintf("[reject] %s: %s — больше не предлагать", d.LocalLabel, declinedCandidate(d)), "info")
+			}
+		}
 		a.qualityJournal.Save()
 	}
 	a.refreshPendingQuality()

@@ -120,6 +120,19 @@ const settings = {
   ExportM3U: false,
   FlacMonitor: true,
   QualityText: 'FLAC: проверок не было',
+  QualityChecking: false,
+  QualityRejected: [{
+    path: 'C:/Music/Artist - Old.mp3',
+    fileName: 'Artist - Old.mp3',
+    localLabel: 'Artist - Old',
+    trackId: '42',
+    matchedArtist: 'Artist',
+    matchedTitle: 'Song (Remix)',
+    album: 'Album',
+    year: '2020',
+    confidence: 100,
+    declinedAtText: '03.11.2026 18:00',
+  }],
 };
 
 (async () => {
@@ -131,6 +144,40 @@ const settings = {
   check('фокус в первом поле', document.activeElement === registry['sToken'],
     document.activeElement && document.activeElement.id);
   check('снимок чистый', api.isDirty() === false);
+
+  console.log('scenario: rejected matches list and undo');
+  const rejectedList = registry['sRejectedList'];
+  const rejectedEmpty = registry['sRejectedEmpty'];
+  const rejectedRow = rejectedList.children[0];
+  check('список отказов показан', rejectedList.hidden === false);
+  check('пустое состояние скрыто', rejectedEmpty.hidden === true);
+  check('локальный файл в строке', rejectedRow.children[0].children[0].textContent === 'Artist - Old');
+  check('найденный трек в строке', rejectedRow.children[0].children[1].textContent.includes('Song (Remix)'));
+  const undoBtn = rejectedRow.children[1];
+  check('кнопка Вернуть есть', undoBtn.textContent === 'Вернуть');
+  window.go.ui.App.UndoReject = async (p, id) => {
+    check('UndoReject получил путь', p === 'C:/Music/Artist - Old.mp3');
+    check('UndoReject получил ID', id === '42');
+    return [{
+      key: 'C:/Music/Artist - Old.mp3', path: 'C:/Music/Artist - Old.mp3',
+      fileName: 'Artist - Old.mp3', label: 'Artist - Old',
+      matchSource: 'search', trackId: '42', selected: true,
+    }];
+  };
+  await undoBtn.onclick();
+  await tick();
+  check('запись исчезла', rejectedList.children.length === 0 && rejectedList.hidden === true);
+  check('пустое состояние показано', rejectedEmpty.hidden === false);
+  check('бейдж обновился', registry['settingsBadge'].textContent === '1');
+  check('форма не стала грязной', api.isDirty() === false);
+
+  console.log('scenario: undo is disabled while checking');
+  settings.QualityChecking = true;
+  await api.openSettings();
+  await tick();
+  const checkingUndo = registry['sRejectedList'].children[0].children[1];
+  check('кнопка Вернуть disabled во время проверки', checkingUndo.disabled === true);
+  settings.QualityChecking = false;
 
   console.log('scenario: dirty guard on backdrop/Escape');
   registry['sToken'].value = 'new-token';

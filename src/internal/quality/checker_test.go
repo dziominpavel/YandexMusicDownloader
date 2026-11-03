@@ -283,6 +283,100 @@ func TestCheckerTTLAndPendingSkip(t *testing.T) {
 	}
 }
 
+func TestCheckerRechecksDeclinedLossless(t *testing.T) {
+	now := testTime()
+	p := &fakeProber{uid: 42, plus: true}
+	s := &fakeSearcher{tracks: []*downloader.Track{{
+		ID: "42", Title: "Song", Artists: []string{"Artist"}, Available: true,
+	}}}
+	c, j, _ := newTestChecker(t, []library.Entry{searchEntry()}, p, s)
+	j.Put("file:"+searchEntry().Path, Entry{
+		Status: StatusLossless, Codec: "flac", MatchSource: "search",
+		MatchedTrackID: "42", MatchedArtist: "Artist", MatchedTitle: "Song", Exact: true,
+	})
+	j.Decline(searchEntry().Path, Declined{TrackID: "42", DeclinedAt: now})
+
+	res, err := c.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Found) != 0 {
+		t.Fatalf("declined lossless must not be offered: %+v", res.Found)
+	}
+	if len(s.calls) != 1 {
+		t.Fatalf("declined file must be searched again, got %v", s.calls)
+	}
+	e, ok := j.Get("file:" + searchEntry().Path)
+	if !ok || e.Status != StatusNoMatch {
+		t.Fatalf("want no_match after recheck, got %+v ok=%v", e, ok)
+	}
+	if !e.NextCheck.Equal(now.Add(AutoCheckInterval)) {
+		t.Fatalf("all-declined retry must be 7 days, got %v", e.NextCheck)
+	}
+}
+
+func TestCheckerDeclinedCandidateFallsThrough(t *testing.T) {
+	now := testTime()
+	p := &fakeProber{uid: 42, plus: true, probes: map[string]downloader.Probe{
+		"43": {Available: true, Codec: "flac"},
+	}}
+	s := &fakeSearcher{tracks: []*downloader.Track{
+		{ID: "42", Title: "Song", Artists: []string{"Artist"}, Available: true},
+		{ID: "43", Title: "Song", Artists: []string{"Artist"}, Available: true},
+	}}
+	c, j, _ := newTestChecker(t, []library.Entry{searchEntry()}, p, s)
+	j.Decline(searchEntry().Path, Declined{TrackID: "42", DeclinedAt: now})
+
+	res, err := c.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Found) != 1 || res.Found[0].TrackID != "43" {
+		t.Fatalf("next candidate must be offered: %+v", res.Found)
+	}
+	if len(p.calls) != 1 || p.calls[0] != "43" {
+		t.Fatalf("only the non-rejected candidate must be probed: %v", p.calls)
+	}
+	if e, _ := j.Get("file:" + searchEntry().Path); e.MatchedTrackID != "43" {
+		t.Fatalf("journal must point at the new candidate: %+v", e)
+	}
+}
+
+func TestCheckerNoCandidatesUsesThirtyDayTTL(t *testing.T) {
+	now := testTime()
+	p := &fakeProber{uid: 42, plus: true}
+	s := &fakeSearcher{tracks: []*downloader.Track{{
+		ID: "42", Title: "Completely different", Artists: []string{"Other"}, Available: true,
+	}}}
+	c, j, _ := newTestChecker(t, []library.Entry{searchEntry()}, p, s)
+	if _, err := c.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e, _ := j.Get("file:" + searchEntry().Path)
+	if e.Status != StatusNoMatch || !e.NextCheck.Equal(now.Add(NoLosslessTTL)) {
+		t.Fatalf("no-candidate retry must stay 30 days: %+v", e)
+	}
+}
+
+func TestCheckerIDMatchIgnoresDecline(t *testing.T) {
+	now := testTime()
+	p := &fakeProber{uid: 42, plus: true}
+	c, j, _ := newTestChecker(t, []library.Entry{idEntry()}, p, &fakeSearcher{})
+	j.Put("1", Entry{Status: StatusLossless, Codec: "flac", MatchSource: "id"})
+	j.Decline(idEntry().Path, Declined{TrackID: "1", DeclinedAt: now})
+
+	res, err := c.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Found) != 1 || res.Found[0].MatchSource != "id" {
+		t.Fatalf("ID match must ignore the rejection filter: %+v", res.Found)
+	}
+	if len(p.calls) != 0 {
+		t.Fatalf("ID lossless must be served from the journal, got probes %v", p.calls)
+	}
+}
+
 func TestCheckerProgressAndThrottle(t *testing.T) {
 	p := &fakeProber{uid: 42, plus: true, probes: map[string]downloader.Probe{
 		"1": {Available: true, Codec: "flac"},

@@ -9,9 +9,8 @@
 <body data-state="idle">
 <svg class="svg-sprite" aria-hidden="true" focusable="false">
   <symbol id="icon-vinyl" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></symbol>
-  <symbol id="icon-flac" viewBox="0 0 24 24"><path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></symbol>
   <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
-  <symbol id="icon-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></symbol>
+  <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
   <symbol id="icon-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
   <symbol id="icon-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
   <symbol id="icon-clipboard" viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></symbol>
@@ -25,6 +24,19 @@
   <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 8a8 8 0 0 1 13.2 1M4.7 15a8 8 0 0 0 13.2 1"/></symbol>
 </svg>
 
+<div id="boot" class="boot" aria-hidden="true">
+  <div class="boot__glow"></div>
+  <div class="boot__mark">
+    <div class="boot__disc-wrap">
+      <svg class="boot__disc" viewBox="0 0 24 24"><use href="#icon-vinyl"/></svg>
+    </div>
+    <div class="boot__word">
+      <span class="boot__title">Yandex Music</span>
+      <span class="boot__sub">Downloader</span>
+    </div>
+  </div>
+</div>
+
 <div class="app-shell">
   <header class="app-header">
     <div class="brand" aria-label="Yandex Music Downloader">
@@ -32,19 +44,12 @@
       <span class="brand-text"><span class="brand-title">Yandex Music</span><span class="brand-sub">Downloader</span></span>
     </div>
     <div class="header-actions">
-      <div class="quality-wrap">
-        <button id="qualityBtn" class="btn btn-ghost icon-btn quality-btn" type="button" aria-label="Проверить наличие FLAC" title="Проверить наличие FLAC">
-          <svg class="icon" aria-hidden="true"><use href="#icon-flac"/></svg>
-          <span class="btn-label">FLAC</span>
-          <span id="qualityBadge" class="badge badge-accent" hidden>0</span>
-        </button>
-        <span id="qualityStatus" class="quality-status" hidden></span>
-      </div>
       <button id="openFolderBtn" class="btn btn-ghost icon-btn" type="button" aria-label="Открыть папку загрузок" title="Открыть папку загрузок">
         <svg class="icon" aria-hidden="true"><use href="#icon-folder"/></svg>
       </button>
-      <button id="settingsBtn" class="btn btn-ghost icon-btn" type="button" aria-label="Настройки" title="Настройки">
+      <button id="settingsBtn" class="btn btn-ghost icon-btn settings-btn" type="button" aria-label="Настройки" title="Настройки">
         <svg class="icon" aria-hidden="true"><use href="#icon-settings"/></svg>
+        <span id="settingsBadge" class="badge badge-accent settings-badge" hidden>0</span>
       </button>
     </div>
   </header>
@@ -251,7 +256,14 @@
         <label class="checkbox-row"><input type="checkbox" id="sFlacMonitor"><span>Проверять наличие FLAC автоматически</span></label>
         <div class="inline-actions">
           <button type="button" id="sCheckNow" class="btn btn-secondary btn-sm">Проверить сейчас</button>
+          <button type="button" id="sQualityOpen" class="btn btn-secondary btn-sm" hidden>Открыть найденное</button>
           <span id="sQualityStatus" class="help">FLAC: проверок не было</span>
+        </div>
+        <p class="help">Новые FLAC скачиваются в папку загрузок; старый MP3 и его .lrc перемещаются в _old рядом с исходным файлом.</p>
+        <div class="rejected-block">
+          <h4 class="rejected-title">Отклонённые совпадения</h4>
+          <div id="sRejectedList" class="rejected-list" hidden></div>
+          <p id="sRejectedEmpty" class="help">Отклонённых совпадений нет.</p>
         </div>
       </section>
     </div>

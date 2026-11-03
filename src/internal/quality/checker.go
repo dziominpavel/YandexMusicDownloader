@@ -113,7 +113,8 @@ func (c *Checker) Check(ctx context.Context) (Result, error) {
 		}
 
 		if c.Journal != nil {
-			if je, ok := c.Journal.Get(key); ok && je.Status == StatusLossless {
+			if je, ok := c.Journal.Get(key); ok && je.Status == StatusLossless &&
+				!c.Journal.IsDeclined(cand.Path, je.MatchedTrackID) {
 				processed++
 				c.progress(i+1, len(candidates))
 				continue
@@ -213,6 +214,7 @@ func (c *Checker) searchCandidate(ctx context.Context, cand Candidate, now time.
 		score library.CandidateScore
 	}
 	var list []scored
+	declined := 0
 	for _, t := range tracks {
 		if t == nil || !t.Available {
 			continue
@@ -221,7 +223,8 @@ func (c *Checker) searchCandidate(ctx context.Context, cand Candidate, now time.
 		if !ok {
 			continue
 		}
-		if c.Journal != nil && c.Journal.IsDeclined(cand.Path, t.ID, now) {
+		if c.Journal != nil && c.Journal.IsDeclined(cand.Path, t.ID) {
+			declined++
 			continue
 		}
 		list = append(list, scored{t: t, score: score})
@@ -236,7 +239,13 @@ func (c *Checker) searchCandidate(ctx context.Context, cand Candidate, now time.
 		return list[i].t.ID < list[j].t.ID
 	})
 	if len(list) == 0 {
-		c.put(key, Entry{Status: StatusNoMatch, CheckedAt: now, NextCheck: now.Add(NoLosslessTTL)})
+		ttl := NoLosslessTTL
+		if declined > 0 {
+			// The only candidates were rejected: keep looking for another
+			// version on the next auto-check instead of waiting a month.
+			ttl = AutoCheckInterval
+		}
+		c.put(key, Entry{Status: StatusNoMatch, CheckedAt: now, NextCheck: now.Add(ttl)})
 		return nil
 	}
 
