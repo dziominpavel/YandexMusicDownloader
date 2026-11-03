@@ -117,7 +117,7 @@ func TestDownloadBadLink(t *testing.T) {
 func TestCheckDuplicateBranching(t *testing.T) {
 	ix := testIndex(t, "Исполнитель A - Песня.flac")
 	var asked []duplicatePrompt
-	a := &App{index: ix, confirmDuplicate: func(p duplicatePrompt) bool {
+	a := &App{index: ix, duplicatesEnabled: true, confirmDuplicate: func(p duplicatePrompt) bool {
 		asked = append(asked, p)
 		return false
 	}}
@@ -164,7 +164,7 @@ func TestCheckDuplicateBranching(t *testing.T) {
 // AnswerDuplicate, а не показывает системный MessageBox.
 func TestDuplicatePromptWaitsForFrontendAnswer(t *testing.T) {
 	ix := testIndex(t, "Исполнитель A - Песня.flac")
-	a := &App{index: ix, ctx: context.Background()}
+	a := &App{index: ix, duplicatesEnabled: true, ctx: context.Background()}
 	var got duplicatePrompt
 	a.eventSink = func(name string, args ...any) {
 		if name != "duplicate-prompt" {
@@ -187,7 +187,7 @@ func TestDuplicatePromptWaitsForFrontendAnswer(t *testing.T) {
 func TestDuplicatePromptMentionsFormat(t *testing.T) {
 	ix := testIndex(t, "Исполнитель A - Песня.mp3")
 	var got duplicatePrompt
-	a := &App{index: ix, confirmDuplicate: func(p duplicatePrompt) bool { got = p; return true }}
+	a := &App{index: ix, duplicatesEnabled: true, confirmDuplicate: func(p duplicatePrompt) bool { got = p; return true }}
 	tr := &downloader.Track{Artists: []string{"Исполнитель A"}, Title: "Песня"}
 	a.checkDuplicate(tr)
 	if !got.DifferentFormat || got.FileExt != "mp3" {
@@ -205,8 +205,9 @@ func TestFilterDuplicatesPlaylist(t *testing.T) {
 	var logs []string
 	// Первый совпавший трек отклоняем, второй подтверждаем.
 	a := &App{
-		index:   ix,
-		logSink: func(text, kind string) { logs = append(logs, text) },
+		index:             ix,
+		duplicatesEnabled: true,
+		logSink:           func(text, kind string) { logs = append(logs, text) },
 		confirmDuplicate: func(p duplicatePrompt) bool {
 			return !strings.Contains(p.Track, "Песня 1")
 		},
@@ -292,6 +293,36 @@ func TestSetupLibraryInvalidPath(t *testing.T) {
 	}
 }
 
+func TestSetupLibraryForFlacMonitor(t *testing.T) {
+	downloads := t.TempDir()
+	end := filepath.Join(t.TempDir(), ".env")
+
+	// Empty LIBRARY_DIR + monitor on: index OUTPUT_DIR, no duplicate dialogs.
+	a := &App{outputDir: downloads, cfg: config.Config{FlacMonitor: true}}
+	a.setupLibrary(end, "")
+	if a.index == nil {
+		t.Fatal("monitor must build an index over OUTPUT_DIR")
+	}
+	if a.duplicatesEnabled {
+		t.Fatal("monitor alone must not enable duplicate checks")
+	}
+
+	// Empty LIBRARY_DIR + monitor off: exactly the old behaviour.
+	a = &App{outputDir: downloads}
+	a.setupLibrary(end, "")
+	if a.index != nil || a.duplicatesEnabled {
+		t.Fatal("without monitor an empty LIBRARY_DIR must keep indexing off")
+	}
+
+	// Valid LIBRARY_DIR: index and duplicate checks are on.
+	collection := t.TempDir()
+	a = &App{outputDir: downloads}
+	a.setupLibrary(end, collection)
+	if a.index == nil || !a.duplicatesEnabled {
+		t.Fatalf("valid LIBRARY_DIR must enable indexing and duplicates: index=%v dup=%v", a.index != nil, a.duplicatesEnabled)
+	}
+}
+
 // --- 3.2: предупреждение о неполной проверке во время индексации ---
 
 func TestCheckDuplicateWarnsWhileScanning(t *testing.T) {
@@ -303,8 +334,9 @@ func TestCheckDuplicateWarnsWhileScanning(t *testing.T) {
 
 	var logs []string
 	a := &App{
-		index:   ix,
-		logSink: func(text, kind string) { logs = append(logs, text) },
+		index:             ix,
+		duplicatesEnabled: true,
+		logSink:           func(text, kind string) { logs = append(logs, text) },
 		confirmDuplicate: func(duplicatePrompt) bool {
 			return true
 		},

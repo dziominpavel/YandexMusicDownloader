@@ -11,6 +11,11 @@ import (
 // ffmpegFile is the sidecar converter binary, placed next to the app exe.
 const ffmpegFile = "ffmpeg.exe"
 
+// HasFFmpeg reports whether the sidecar converter is available.
+func HasFFmpeg() bool {
+	return findFFmpeg() != ""
+}
+
 // findFFmpeg locates the ALAC→FLAC converter: FFMPEG_PATH env first,
 // then ffmpeg.exe next to the running exe. Empty string = unavailable,
 // M4A downloads stay M4A.

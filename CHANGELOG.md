@@ -6,6 +6,7 @@
 ## [Unreleased]
 
 **Добавлено**
+- Приложение следит за MP3 в коллекции и предлагает заменить их на FLAC, если Яндекс добавил lossless; старые файлы сохраняются в _old.
 - Файловый лог рядом с приложением: сбои и ошибки теперь можно разобрать после закрытия окна.
 - Enter в поле ссылки запускает скачивание, а поле само получает фокус при старте и после загрузки.
 
@@ -18,6 +19,7 @@
 - **BREAKING:** история последних ссылок убрана: поле ввода больше не перекрывает лог выпадающим списком.
 
 ### Добавлено
+- `add-flac-quality-monitor`: новая capability `quality-upgrade` и параметр `FLAC_MONITOR` (по умолчанию false): проверка MP3 из `LIBRARY_DIR` и `OUTPUT_DIR` по Yandex ID или поиску `artist + title`, журнал `flac-quality.json` с TTL и сбросом по аккаунту/Плюсу, окно сводки/списка с чекбоксами, статус последней проверки в главном окне и настройках. Обновление идёт через `downloader.Upgrade`: lossless → ALAC→FLAC при `flac-mp4` → теги → атомарная публикация рядом со старым MP3 → старый файл в `<корень>\_old\<относительный путь>`; при fallback/ошибке старый файл не перемещается. Индекс хранит `TrackID`/`SourceURL`, поднят `cacheVersion` до 2, каталоги `_old` исключены. Новые пакеты `internal/tagread` и `internal/quality`; тесты `internal/{config,library,downloader,quality,ui}`. Документация: `.env.example`, `docs/15-flac-monitor.md`.
 - `add-file-log`: пакет `internal/applog` пишет все строки окна в `app.log` рядом с exe (fallback `%LOCALAPPDATA%\YandexMusicDownloader\app.log`), формат RFC 3339 + `[уровень]`, ротация 5 МиБ в `app.log.1` с одной резервной копией, редакция `OAuth ...` и зарегистрированного токена до записи в файл и окно, шапка с версией/VCS-ревизией, ОС, архитектурой и путями, строка `[log] файл: ...` при старте. Тесты: `TestWriteFormat`, `TestWriteMultiline`, `TestRedactOAuth`, `TestRedactSecretValue`, `TestRotate`, `TestRotateReplacesBackup`, `TestOpenFallback`, `TestOpenAllFail`, `TestConcurrentWrites`, `TestLogWritesFile`, `TestStartupLogsFilePath`, `TestLogRedactsToken`.
 - `enter-to-download`: в `src/frontend/dist/index.html` старт вынесен в `startDownload()`, Enter на `#link` вызывает его через `keyup`, кнопка остаётся тумблером старт/стоп; при `busy` Enter игнорируется и сохраняет текст в поле; фокус возвращается при старте окна, после `job-end`, закрытия окна дубля и настроек. Стенд `tests/statusbar_check.js` получил `dispatch`/`activeElement` и сценарии Enter; README обновлён. Проверки: `node tests/statusbar_check.js`, `go test ./...`, `openspec validate --all`, `python scripts/check-version.py`.
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"yamdl/internal/tagger"
+	"yamdl/internal/tagread"
 )
 
 // writeRaw creates a file with the given (non-tag) content.
@@ -98,6 +99,73 @@ func TestTagsBeatFilename(t *testing.T) {
 		}
 		if !e.Matchable {
 			t.Errorf("%s: tagged file must be matchable", c.ext)
+		}
+	}
+}
+
+func TestReadsYandexIDAndSourceURL(t *testing.T) {
+	const source = "https://music.yandex.ru/album/7/track/99"
+	m := tagger.Meta{
+		Title: "Название", Artists: []string{"Исполнитель"},
+		TrackID: "99", SourceURL: source,
+	}
+	for _, c := range []struct{ fixture, ext string }{
+		{"mp3-id3v24.mp3", ".mp3"},
+		{"flac.flac", ".flac"},
+		{"mp4-aac.m4a", ".m4a"},
+	} {
+		p := tagFixture(t, c.fixture, c.ext, m)
+		e := readEntry(p, fileMeta{ext: c.ext})
+		if e.TrackID != "99" {
+			t.Errorf("%s: TrackID = %q, want 99", c.ext, e.TrackID)
+		}
+		if e.SourceURL != source {
+			t.Errorf("%s: SourceURL = %q, want %q", c.ext, e.SourceURL, source)
+		}
+	}
+}
+
+func TestReadsTrackIDFromSourceURLFallback(t *testing.T) {
+	// Older files may carry only the source URL, without YANDEX_TRACK_ID
+	// or UFID. The index still has to recover the numeric id.
+	const source = "https://music.yandex.ru/album/7/track/123"
+	m := tagger.Meta{Title: "Название", Artists: []string{"Исполнитель"}, SourceURL: source}
+	for _, c := range []struct{ fixture, ext string }{
+		{"mp3-id3v24.mp3", ".mp3"},
+		{"flac.flac", ".flac"},
+		{"mp4-aac.m4a", ".m4a"},
+	} {
+		p := tagFixture(t, c.fixture, c.ext, m)
+		e := readEntry(p, fileMeta{ext: c.ext})
+		if e.TrackID != "123" {
+			t.Errorf("%s: TrackID = %q, want 123", c.ext, e.TrackID)
+		}
+	}
+}
+
+func TestExternalFileHasNoYandexID(t *testing.T) {
+	p := writeRaw(t, t.TempDir(), "Внешний - Трек.mp3", "junk")
+	e := readEntry(p, fileMeta{ext: ".mp3"})
+	if e.TrackID != "" || e.SourceURL != "" {
+		t.Fatalf("external file must have no Yandex tags, got %+v", e)
+	}
+	if e.Artists != "Внешний" || e.Title != "Трек" {
+		t.Fatalf("filename fallback must still work, got %+v", e)
+	}
+}
+
+func TestParseTrackID(t *testing.T) {
+	cases := map[string]string{
+		"https://music.yandex.ru/album/7/track/99":   "99",
+		"https://music.yandex.by/track/123?utm=1":    "123",
+		"https://music.yandex.com/album/1/track/456": "456",
+		"99":                          "99",
+		"not a track id":              "",
+		"https://example.com/track/x": "",
+	}
+	for in, want := range cases {
+		if got := tagread.NormalizeTrackID(in); got != want {
+			t.Errorf("NormalizeTrackID(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -213,6 +281,40 @@ func TestFindMatchesIgnoresUnmatchable(t *testing.T) {
 	}
 }
 
+func TestScoreCandidate(t *testing.T) {
+	cases := []struct {
+		name         string
+		localArtists []string
+		localTitle   string
+		candArtists  []string
+		candTitle    string
+		wantOK       bool
+		wantPercent  int
+		wantExact    bool
+	}{
+		{"точное совпадение", []string{"Artist"}, "Song", []string{"Artist"}, "Song", true, 100, true},
+		{"93 процента", []string{"Noize MC"}, "Светлая полосы", []string{"Noize MC"}, "Светлая полоса", true, 93, false},
+		{"ё и е", []string{"Artist"}, "Всё", []string{"Artist"}, "Все", true, 100, true},
+		{"порядок исполнителей", []string{"B", "A"}, "Song", []string{"A", "B"}, "Song", true, 100, true},
+		{"другая версия", []string{"Artist"}, "Song", []string{"Artist"}, "Song (Live)", false, 0, false},
+		{"другой исполнитель", []string{"Artist"}, "Song", []string{"Other"}, "Song", false, 0, false},
+		{"нет исполнителя", nil, "Song", []string{"Artist"}, "Song", false, 0, false},
+	}
+	for _, c := range cases {
+		score, ok := ScoreCandidate(c.localArtists, c.localTitle, c.candArtists, c.candTitle)
+		if ok != c.wantOK {
+			t.Errorf("%s: ok = %v, want %v (%+v)", c.name, ok, c.wantOK, score)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if score.Percent != c.wantPercent || score.Exact != c.wantExact {
+			t.Errorf("%s: got %+v, want percent=%d exact=%v", c.name, score, c.wantPercent, c.wantExact)
+		}
+	}
+}
+
 // --- 2.4: кэш и инкремент ---
 
 func TestCacheIncrementalRefresh(t *testing.T) {
@@ -270,6 +372,69 @@ func TestCacheVersionMismatchRescans(t *testing.T) {
 	lines := refresh(t, ix)
 	if !hasLine(lines, "перечитано 1") {
 		t.Fatalf("must rescan from scratch, got %v", lines)
+	}
+}
+
+func TestOldDirectoriesAreSkipped(t *testing.T) {
+	dir := t.TempDir()
+	writeRaw(t, dir, "_old/replaced.mp3", "old")
+	writeRaw(t, dir, filepath.Join("Рок", "_old", "nested.flac"), "old")
+	writeRaw(t, dir, "kept.mp3", "new")
+
+	ix := New(filepath.Join(t.TempDir(), "cache.json"), dir)
+	refresh(t, ix)
+	if ix.Len() != 1 {
+		t.Fatalf("only the non-_old file must be indexed, got %d", ix.Len())
+	}
+	if _, ok := ix.entries[filepath.Join(dir, "kept.mp3")]; !ok {
+		t.Fatal("regular file must survive the _old filter")
+	}
+}
+
+func TestSnapshotIsACopy(t *testing.T) {
+	dir := t.TempDir()
+	writeRaw(t, dir, "A - Song.mp3", "x")
+	ix := New(filepath.Join(t.TempDir(), "cache.json"), dir)
+	refresh(t, ix)
+
+	snap := ix.Snapshot()
+	if len(snap) != 1 || snap[0].Title != "Song" {
+		t.Fatalf("unexpected snapshot: %+v", snap)
+	}
+	snap[0].Title = "changed"
+	if ix.Snapshot()[0].Title != "Song" {
+		t.Fatal("Snapshot must not expose the internal entry map")
+	}
+}
+
+func TestRemoveFile(t *testing.T) {
+	dir := t.TempDir()
+	p := writeRaw(t, dir, "A - Song.mp3", "x")
+	ix := New(filepath.Join(t.TempDir(), "cache.json"), dir)
+	refresh(t, ix)
+	ix.RemoveFile(p)
+	if ix.Len() != 0 {
+		t.Fatalf("removed file must leave the index, got %d", ix.Len())
+	}
+}
+
+func TestCacheVersionOneIsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	cache := filepath.Join(t.TempDir(), "cache.json")
+	writeRaw(t, dir, "A - Song.mp3", "x")
+	refresh(t, New(cache, dir))
+
+	// The previous schema (v1) has no track id fields; it must be rebuilt.
+	if err := os.WriteFile(cache, []byte(`{"version":1,"entries":[{"path":"stale.mp3"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ix := New(cache, dir)
+	if ix.Len() != 0 {
+		t.Fatalf("v1 cache must be ignored, got %d", ix.Len())
+	}
+	lines := refresh(t, ix)
+	if !hasLine(lines, "перечитано 1") {
+		t.Fatalf("v1 cache must trigger a rescan, got %v", lines)
 	}
 }
 

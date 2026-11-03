@@ -11,7 +11,32 @@
   #settingsBtn, #openFolderBtn { padding: 6px 10px; font-size: 18px; line-height: 1; background: #2d2d2d; color: #ddd; border: 1px solid #3c3c3c; border-radius: 4px; cursor: pointer; }
   #settingsBtn:hover, #openFolderBtn:hover { background: #3a3a3a; }
   #settingsBtn:disabled, #openFolderBtn:disabled { cursor: wait; opacity: 0.6; }
-  #headActions { display: flex; gap: 8px; }
+  #headActions { display: flex; gap: 8px; align-items: center; }
+  /* Мониторинг FLAC: кнопка, бейдж найденного и компактная дата проверки. */
+  #qualityBox { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  #qualityBtn { position: relative; padding: 6px 10px; font-size: 13px; line-height: 1.1; background: #2d2d2d; color: #ddd; border: 1px solid #3c3c3c; border-radius: 4px; cursor: pointer; }
+  #qualityBtn:hover:not(:disabled) { background: #3a3a3a; }
+  #qualityBtn:disabled { cursor: wait; opacity: 0.6; }
+  #qualityBadge { position: absolute; top: -7px; right: -7px; min-width: 17px; height: 17px; padding: 0 4px; box-sizing: border-box; border-radius: 9px; background: #b3261e; color: #fff; font-size: 11px; line-height: 17px; text-align: center; }
+  #qualityBadge[hidden] { display: none; }
+  #qualityStatus { max-width: 270px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #aaa; }
+  #sQualityStatus { margin-top: 6px; font-size: 12px; color: #aaa; white-space: normal; }
+  /* Окно найденного: сводка, список с чекбоксами, «Позже»/«Скачать». */
+  #qualityOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40; }
+  #qualityOverlay.open { display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; }
+  #qualityCard { background: #252526; border: 1px solid #3c3c3c; border-radius: 6px; padding: 18px 20px; width: 640px; max-width: 94vw; max-height: 88vh; overflow-y: auto; box-sizing: border-box; }
+  #qualityCard h3 { margin: 0 0 10px; font-size: 16px; }
+  #qualitySummary { margin: 0 0 10px; font-size: 13px; color: #ddd; line-height: 1.45; }
+  #qualityList { margin: 4px 0 10px; max-height: 48vh; overflow-y: auto; border-top: 1px solid #3c3c3c; }
+  #qualityList[hidden] { display: none; }
+  .qrow { display: flex; gap: 8px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid #333; }
+  .qrow input { margin-top: 3px; flex: none; }
+  .qmain { flex: 1; min-width: 0; }
+  .qname { font-size: 13px; color: #eee; overflow-wrap: anywhere; }
+  .qmeta { font-size: 12px; color: #aaa; margin-top: 2px; overflow-wrap: anywhere; }
+  .qmatch { font-size: 12px; color: #79c0ff; margin-top: 2px; overflow-wrap: anywhere; }
+  #qualityError { color: #ff7b72; font-size: 13px; min-height: 16px; white-space: pre-wrap; }
+  #sCheckNow { padding: 7px 12px; font-size: 13px; cursor: pointer; }
   /* Один grid на строку ввода + статусбар (1fr auto):
      полоса идёт строго под полем ввода, процент — по центру под «Скачать». */
   #row { display: grid; grid-template-columns: 1fr auto; gap: 14px 8px; margin-top: 14px; }
@@ -119,6 +144,10 @@
 <div id="head">
   <h2>YandexMusicDownloader</h2>
   <div id="headActions">
+    <div id="qualityBox">
+      <button id="qualityBtn" title="Проверить наличие FLAC">FLAC<span id="qualityBadge" hidden>0</span></button>
+      <span id="qualityStatus" title="Проверок ещё не было">FLAC: проверок не было</span>
+    </div>
     <button id="openFolderBtn" title="Открыть папку загрузок">📂</button>
     <button id="settingsBtn" title="Настройки">⚙</button>
   </div>
@@ -198,6 +227,12 @@
       </div>
     </div>
     <div class="scheck"><input type="checkbox" id="sExportM3u"><label for="sExportM3u">Экспортировать плейлист/альбом в .m3u</label></div>
+    <div class="sfield">
+      <label>Мониторинг FLAC</label>
+      <div class="scheck"><input type="checkbox" id="sFlacMonitor"><label for="sFlacMonitor">Проверять наличие FLAC автоматически</label></div>
+      <div class="sline"><button type="button" id="sCheckNow">Проверить сейчас</button></div>
+      <div id="sQualityStatus">FLAC: проверок не было</div>
+    </div>
     <div id="settingsError"></div>
     <div class="sbuttons">
       <button id="sCancel">Отмена</button>
@@ -246,6 +281,20 @@
   </div>
 </div>
 
+<div id="qualityOverlay" aria-hidden="true">
+  <div id="qualityCard" role="dialog" aria-modal="true" aria-labelledby="qualityTitle" tabindex="-1">
+    <h3 id="qualityTitle">Найдены треки в лучшем качестве</h3>
+    <p id="qualitySummary"></p>
+    <div id="qualityList" hidden></div>
+    <div id="qualityError"></div>
+    <div class="sbuttons">
+      <button type="button" id="qualityShowList">Показать список</button>
+      <button type="button" id="qualityLater">Позже</button>
+      <button type="button" id="qualityDownload">Скачать все</button>
+    </div>
+  </div>
+</div>
+
 <script>
   const log = document.getElementById('log');
   const prog = document.getElementById('prog');
@@ -267,6 +316,189 @@
     log.appendChild(div);
   }
   function fmtMB(b) { return (b / 1048576).toFixed(1); }
+
+  // --- Мониторинг FLAC: кнопка, статус, окно найденного ---
+  const qualityBtn = document.getElementById('qualityBtn');
+  const qualityBadge = document.getElementById('qualityBadge');
+  const qualityStatus = document.getElementById('qualityStatus');
+  const qualityOverlay = document.getElementById('qualityOverlay');
+  const qualitySummary = document.getElementById('qualitySummary');
+  const qualityList = document.getElementById('qualityList');
+  const qualityError = document.getElementById('qualityError');
+  const qualityShowList = document.getElementById('qualityShowList');
+  const qualityLater = document.getElementById('qualityLater');
+  const qualityDownload = document.getElementById('qualityDownload');
+  let qualityItems = [];
+  let qualityListOpen = false;
+  let qualityChecking = false;
+
+  function updateQualityBadge(n) {
+    if (n > 0) { qualityBadge.hidden = false; qualityBadge.textContent = String(n); }
+    else { qualityBadge.hidden = true; qualityBadge.textContent = '0'; }
+    qualityBtn.title = n > 0 ? 'Обновить FLAC (' + n + ')' : 'Проверить наличие FLAC';
+  }
+
+  function qualityRow(it) {
+    const row = document.createElement('label');
+    row.className = 'qrow';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!it.selected;
+    cb.dataset.key = it.key;
+    const main = document.createElement('span');
+    main.className = 'qmain';
+    const name = document.createElement('div');
+    name.className = 'qname';
+    name.textContent = it.label || it.fileName || it.path;
+    const meta = document.createElement('div');
+    meta.className = 'qmeta';
+    meta.textContent = it.alreadyFlac
+      ? 'MP3 → _old (FLAC уже есть)'
+      : 'MP3 → ' + (it.foundFormat || 'FLAC');
+    main.appendChild(name);
+    main.appendChild(meta);
+    if (it.matchSource === 'search') {
+      const match = document.createElement('div');
+      match.className = 'qmatch';
+      const bits = [];
+      if (it.matchedArtist) bits.push(it.matchedArtist);
+      if (it.matchedTitle) bits.push(it.matchedTitle);
+      let text = 'Найдено по названию: ' + bits.join(' — ');
+      if (it.album) text += ' · ' + it.album;
+      if (it.year) text += ' (' + it.year + ')';
+      if (it.confidence) text += ' · ' + it.confidence + '%';
+      match.textContent = text;
+      main.appendChild(match);
+    }
+    row.appendChild(cb);
+    row.appendChild(main);
+    return row;
+  }
+
+  function renderQualityList() {
+    qualityList.innerHTML = '';
+    qualityItems.forEach((it) => qualityList.appendChild(qualityRow(it)));
+  }
+
+  function updateQualitySummary() {
+    const ids = qualityItems.filter((x) => x.matchSource === 'id' || x.alreadyFlac).length;
+    const searches = qualityItems.length - ids;
+    let text = 'Найдено ' + qualityItems.length + ' трек' +
+      (qualityItems.length === 1 ? '' : 'ов') + ' в лучшем качестве.';
+    if (searches > 0) text += ' Из них ' + searches + ' — по названию, проверь совпадения.';
+    qualitySummary.textContent = text;
+  }
+
+  function renderQuality(items, open) {
+    qualityItems = Array.isArray(items) ? items : [];
+    updateQualityBadge(qualityItems.length);
+    if (qualityOverlay.classList.contains('open')) {
+      renderQualityList();
+      updateQualitySummary();
+    }
+    if (open && qualityItems.length > 0) openQuality();
+  }
+
+  function openQuality() {
+    if (qualityItems.length === 0) return;
+    qualityError.textContent = '';
+    // Search matches that are not 100% confident open in review mode;
+    // an all-ID batch stays a compact "download all" summary.
+    const needsReview = qualityItems.some((it) => !it.selected);
+    qualityListOpen = needsReview;
+    qualityList.hidden = !qualityListOpen;
+    qualityShowList.textContent = qualityListOpen ? 'Скрыть список' : 'Показать список';
+    qualityDownload.textContent = qualityListOpen ? 'Скачать выбранные' : 'Скачать все';
+    renderQualityList();
+    updateQualitySummary();
+    qualityOverlay.classList.add('open');
+    qualityOverlay.setAttribute('aria-hidden', 'false');
+    qualityDownload.focus();
+  }
+
+  function closeQuality() {
+    qualityOverlay.classList.remove('open');
+    qualityOverlay.setAttribute('aria-hidden', 'true');
+    input.focus();
+  }
+
+  function selectedQualityItems() {
+    if (!qualityListOpen) return qualityItems.filter((it) => it.selected);
+    const checked = new Set();
+    qualityList.querySelectorAll('input[type=checkbox]').forEach((cb) => {
+      if (cb.checked) checked.add(cb.dataset.key);
+    });
+    return qualityItems.filter((it) => checked.has(it.key));
+  }
+
+  qualityShowList.onclick = () => {
+    qualityListOpen = !qualityListOpen;
+    qualityList.hidden = !qualityListOpen;
+    qualityShowList.textContent = qualityListOpen ? 'Скрыть список' : 'Показать список';
+    qualityDownload.textContent = qualityListOpen ? 'Скачать выбранные' : 'Скачать все';
+  };
+  qualityLater.onclick = closeQuality;
+  qualityOverlay.onclick = (e) => { if (e.target === qualityOverlay) closeQuality(); };
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && qualityOverlay.classList.contains('open')) {
+      e.preventDefault();
+      closeQuality();
+    }
+  });
+
+  qualityDownload.onclick = async () => {
+    const selected = selectedQualityItems();
+    if (selected.length === 0) { qualityError.textContent = 'Выбери хотя бы один трек'; return; }
+    closeQuality();
+    try { await window.go.ui.App.DownloadFound(selected); }
+    catch (e) { line('[error] ' + e, 'err'); }
+  };
+
+  async function checkQualityNow() {
+    if (qualityChecking) return;
+    try { await window.go.ui.App.CheckQuality(); }
+    catch (e) { line('[error] ' + e, 'err'); }
+  }
+
+  qualityBtn.onclick = () => {
+    if (qualityItems.length > 0) openQuality();
+    else checkQualityNow();
+  };
+
+  window.runtime.EventsOn('quality-check-started', () => {
+    qualityChecking = true;
+    qualityBtn.disabled = true;
+    qualityStatus.textContent = 'FLAC: проверка идёт…';
+  });
+  window.runtime.EventsOn('quality-check-progress', (done, total) => {
+    qualityStatus.textContent = 'FLAC: проверено ' + done + '/' + total + '…';
+  });
+  window.runtime.EventsOn('quality-check-finished', (text, found, err, pending) => {
+    qualityChecking = false;
+    qualityBtn.disabled = busy;
+    qualityStatus.textContent = text || 'FLAC: проверка завершена';
+    qualityStatus.title = qualityStatus.textContent;
+    updateQualityBadge(pending || 0);
+    const sQualityStatus = document.getElementById('sQualityStatus');
+    if (sQualityStatus) sQualityStatus.textContent = qualityStatus.textContent;
+    // The checker already wrote the Russian error line to the log.
+  });
+  window.runtime.EventsOn('quality-found', (items) => renderQuality(items, true));
+  window.runtime.EventsOn('quality-pending', (items) => renderQuality(items, false));
+
+  async function loadQualityStatus() {
+    try {
+      const s = await window.go.ui.App.QualityStatus();
+      qualityStatus.textContent = s.text || 'FLAC: проверок не было';
+      qualityStatus.title = qualityStatus.textContent;
+      updateQualityBadge(s.pending || 0);
+      if ((s.pending || 0) > 0) {
+        const items = await window.go.ui.App.PendingFound();
+        renderQuality(items, false);
+      }
+    } catch (e) { /* the backend may not be ready yet */ }
+  }
+  loadQualityStatus();
 
   // --- Открыть папку загрузок ---
   const openFolderBtn = document.getElementById('openFolderBtn');
@@ -518,7 +750,16 @@
     }
   }
 
-  window.runtime.EventsOn('job-start', (title, count) => jobReset(title, count));
+  window.runtime.EventsOn('job-start', (title, count) => {
+    jobReset(title, count);
+    // Фоновая job'а (обновление FLAC) стартует не по клику «Скачать»:
+    // переводим окно в то же состояние «■ Остановить».
+    busy = true;
+    btn.classList.add('stop');
+    btn.textContent = '■ Остановить';
+    settingsBtn.disabled = true;
+    qualityBtn.disabled = true;
+  });
   window.runtime.EventsOn('job-end', (ok, skip, error, stopped) => {
     job.ended = true;
     job.result = { ok, skip, failed: error, stopped: !!stopped };
@@ -528,6 +769,7 @@
       for (const s of job.states.values()) s.share = 1;
     }
     scheduleSB();
+    setIdleButton();
   });
   window.runtime.EventsOn('tracks', (items) => trackList(items));
   window.runtime.EventsOn('track-status', (id, status, kind) => trackStatus(id, status, kind));
@@ -606,6 +848,7 @@
     btn.textContent = 'Скачать';
     btn.disabled = false;
     settingsBtn.disabled = false;
+    qualityBtn.disabled = qualityChecking;
     input.focus();
   }
 
@@ -623,6 +866,7 @@
     btn.classList.add('stop');
     btn.textContent = '■ Остановить';
     settingsBtn.disabled = true;
+    qualityBtn.disabled = true;
     try {
       const res = await window.go.ui.App.Download(link);
       if (res) {
@@ -677,6 +921,9 @@
   const sSubdirs = document.getElementById('sSubdirs');
   const sSubdirTemplate = document.getElementById('sSubdirTemplate');
   const sExportM3u = document.getElementById('sExportM3u');
+  const sFlacMonitor = document.getElementById('sFlacMonitor');
+  const sQualityStatus = document.getElementById('sQualityStatus');
+  const sCheckNow = document.getElementById('sCheckNow');
   const tokenCheck = document.getElementById('tokenCheck');
   const settingsError = document.getElementById('settingsError');
   const tokenHelpLink = document.getElementById('tokenHelpLink');
@@ -776,6 +1023,8 @@
       sSubdirs.checked = !!s.Subdirs;
       sSubdirTemplate.value = s.SubdirTemplate || '%artist%/%album%';
       sExportM3u.checked = !!s.ExportM3U;
+      sFlacMonitor.checked = !!s.FlacMonitor;
+      sQualityStatus.textContent = s.QualityText || 'FLAC: проверок не было';
       syncSubdirTemplate();
       tokenCheck.textContent = '';
       syncTokenHint();
@@ -813,6 +1062,12 @@
     } catch (e) { settingsError.textContent = String(e); }
   };
 
+  sCheckNow.onclick = async () => {
+    settingsError.textContent = '';
+    closeSettings();
+    await checkQualityNow();
+  };
+
   document.getElementById('sSave').onclick = async () => {
     settingsError.textContent = '';
     const workers = Number(sWorkers.value);
@@ -842,6 +1097,7 @@
         Subdirs: sSubdirs.checked,
         SubdirTemplate: sSubdirTemplate.value,
         ExportM3U: sExportM3u.checked,
+        FlacMonitor: sFlacMonitor.checked,
       });
       closeSettings();
       line('[done] настройки сохранены', 'done');

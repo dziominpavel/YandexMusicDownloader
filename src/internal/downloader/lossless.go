@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -15,8 +16,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"yamdl/internal/tagread"
 )
 
 // losslessSignKey signs get-file-info requests (part of the public API protocol).
@@ -40,6 +44,12 @@ func signLossless(timestamp int64, trackID string) string {
 
 // fileInfoURL builds the get-file-info request URL.
 func fileInfoURL(trackID string, timestamp int64) string {
+	return fileInfoURLAt(apiBase, trackID, timestamp)
+}
+
+// fileInfoURLAt builds the get-file-info URL for an explicit API host,
+// so tests can point it at httptest.
+func fileInfoURLAt(base, trackID string, timestamp int64) string {
 	q := url.Values{}
 	q.Set("ts", fmt.Sprintf("%d", timestamp))
 	q.Set("trackId", trackID)
@@ -47,7 +57,7 @@ func fileInfoURL(trackID string, timestamp int64) string {
 	q.Set("codecs", strings.Join(losslessCodecs(), ","))
 	q.Set("transports", "raw")
 	q.Set("sign", signLossless(timestamp, trackID))
-	return apiBase + "/get-file-info?" + q.Encode()
+	return strings.TrimRight(base, "/") + "/get-file-info?" + q.Encode()
 }
 
 type fileInfoPayload struct {
@@ -150,27 +160,9 @@ func losslessExt(codec string) string {
 	return ".flac"
 }
 
-// accountUID resolves the numeric user id needed for lossless requests.
-func (c *Client) accountUID() (int64, error) {
-	var data struct {
-		Result struct {
-			Account struct {
-				UID int64 `json:"uid"`
-			} `json:"account"`
-		} `json:"result"`
-	}
-	if err := c.get(apiBase+"/account/status", &data); err != nil {
-		return 0, err
-	}
-	if data.Result.Account.UID == 0 {
-		return 0, fmt.Errorf("downloader: no account uid (authorization required)")
-	}
-	return data.Result.Account.UID, nil
-}
-
 // losslessFileInfo fetches and validates the lossless source for a track.
 func (c *Client) losslessFileInfo(trackID string, uid int64) (losslessInfo, error) {
-	req, err := c.newRequest(http.MethodGet, fileInfoURL(trackID, time.Now().Unix()))
+	req, err := c.newRequest(http.MethodGet, fileInfoURLAt(c.baseURL(), trackID, time.Now().Unix()))
 	if err != nil {
 		return losslessInfo{}, err
 	}
@@ -306,34 +298,78 @@ func losslessFallbackReason(err error) string {
 	return "ошибка lossless: " + err.Error()
 }
 
-// downloadLossless streams, decrypts, tags and publishes a lossless file.
+// upgradeTarget maps a lossless codec to the destination container, the
+// final result format and the container of the wire stream.
+func upgradeTarget(codec string, convertM4A, ffmpegAvailable bool) (ext, format, streamFormat string) {
+	if strings.EqualFold(strings.TrimSpace(codec), "flac-mp4") {
+		if convertM4A && ffmpegAvailable {
+			return ".flac", "FLAC", "M4A"
+		}
+		return ".m4a", "M4A", "M4A"
+	}
+	return ".flac", "FLAC", "FLAC"
+}
+
+// downloadLossless streams, decrypts, tags and publishes a lossless file
+// into the normal output layout.
 func (c *Client) downloadLossless(track *Track, outputDir string, uid int64, onProgress ProgressFunc) (Result, error) {
 	info, err := c.losslessFileInfo(track.ID, uid)
 	if err != nil {
 		return Result{}, err
 	}
-	streamFormat := "FLAC"
-	if strings.EqualFold(info.Codec, "flac-mp4") {
-		streamFormat = "M4A"
-	}
-	format := streamFormat
-	// ALAC-in-M4A becomes plain FLAC when the sidecar converter is
-	// available: better player support, bit-identical audio.
 	ffmpeg := ""
-	if streamFormat == "M4A" && c.ConvertM4A {
+	if strings.EqualFold(info.Codec, "flac-mp4") && c.ConvertM4A {
 		ffmpeg = findFFmpeg()
-		if ffmpeg != "" {
-			format = "FLAC"
-		}
 	}
-	dest := c.destPath(outputDir, track, losslessExt(info.Codec))
-	if ffmpeg != "" {
-		dest = c.destPath(outputDir, track, ".flac")
-	}
+	ext, format, streamFormat := upgradeTarget(info.Codec, c.ConvertM4A, ffmpeg != "")
+	dest := c.destPath(outputDir, track, ext)
 	if _, err := os.Stat(dest); err == nil {
 		return Result{Path: dest, Format: format}, fmt.Errorf("%w: %s", ErrAlreadyExists, dest)
 	}
+	return c.downloadLosslessTo(track, info, dest, format, streamFormat, ffmpeg, onProgress)
+}
 
+// Upgrade downloads lossless next to oldPath, keeping its stem and
+// directory. It does not move or delete oldPath; the quality upgrader
+// owns the _old policy.
+func (c *Client) Upgrade(ctx context.Context, track *Track, oldPath string, onProgress ProgressFunc) (Result, error) {
+	if track == nil || strings.TrimSpace(track.ID) == "" {
+		return Result{}, fmt.Errorf("downloader: upgrade: empty track")
+	}
+	if ctx == nil {
+		ctx = c.reqCtx()
+	}
+	uid, _, err := c.AccountState(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	info, err := c.losslessFileInfo(track.ID, uid)
+	if err != nil {
+		return Result{}, err
+	}
+	ffmpeg := ""
+	if strings.EqualFold(info.Codec, "flac-mp4") && c.ConvertM4A {
+		ffmpeg = findFFmpeg()
+	}
+	ext, format, streamFormat := upgradeTarget(info.Codec, c.ConvertM4A, ffmpeg != "")
+	stem := strings.TrimSuffix(oldPath, filepath.Ext(oldPath))
+	dest := stem + ext
+	if dest == oldPath {
+		return Result{Path: dest, Format: format}, fmt.Errorf("%w: %s", ErrAlreadyExists, dest)
+	}
+	if _, statErr := os.Stat(dest); statErr == nil {
+		if id := tagread.TrackIDOf(dest); id != "" && id == track.ID {
+			return Result{Path: dest, Format: format}, fmt.Errorf("%w: %s", ErrAlreadyExists, dest)
+		}
+		return Result{Path: dest, Format: format}, fmt.Errorf("%w: %s", ErrDestConflict, dest)
+	}
+	return c.downloadLosslessTo(track, info, dest, format, streamFormat, ffmpeg, onProgress)
+}
+
+// downloadLosslessTo runs the shared stream → convert → tag → publish
+// pipeline for a known lossless source and an explicit destination.
+func (c *Client) downloadLosslessTo(track *Track, info losslessInfo, dest, format, streamFormat, ffmpeg string, onProgress ProgressFunc) (Result, error) {
+	dir := filepath.Dir(dest)
 	var stream cipher.Stream
 	if strings.TrimSpace(info.Key) != "" {
 		key, err := hex.DecodeString(strings.TrimSpace(info.Key))
@@ -352,7 +388,7 @@ func (c *Client) downloadLossless(track *Track, outputDir string, uid int64, onP
 		if c.Stopped() {
 			return Result{}, ErrStopped
 		}
-		tmp, err := c.streamLosslessTemp(rawURL, outputDir, stream, streamFormat, losslessExt(info.Codec), track.ID, track.Label(), onProgress)
+		tmp, err := c.streamLosslessTemp(rawURL, dir, stream, streamFormat, losslessExt(info.Codec), track.ID, track.Label(), onProgress)
 		if err != nil {
 			if c.Stopped() {
 				return Result{}, ErrStopped
@@ -362,7 +398,7 @@ func (c *Client) downloadLossless(track *Track, outputDir string, uid int64, onP
 		}
 		converted := false
 		if ffmpeg != "" {
-			flacTmp, cerr := alacToFLAC(ffmpeg, tmp, outputDir)
+			flacTmp, cerr := alacToFLAC(ffmpeg, tmp, dir)
 			os.Remove(tmp)
 			if cerr != nil {
 				lastErr = cerr

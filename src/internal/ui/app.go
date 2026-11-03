@@ -21,6 +21,7 @@ import (
 	"yamdl/internal/config"
 	"yamdl/internal/downloader"
 	"yamdl/internal/library"
+	"yamdl/internal/quality"
 	"yamdl/internal/resolver"
 	"yamdl/internal/tagger"
 )
@@ -33,9 +34,13 @@ type App struct {
 	ready     string // startup status line
 	mu        sync.Mutex
 
-	// index is the collection index; nil means duplicate checks are off
-	// (LIBRARY_DIR unset or invalid).
+	// index is the collection index; nil means it is not built at all.
+	// It can exist for the FLAC monitor even when LIBRARY_DIR is empty.
 	index *library.Index
+	// duplicatesEnabled is true only when LIBRARY_DIR is set and valid;
+	// the presence of an index alone (FLAC monitor) must not turn on
+	// duplicate dialogs.
+	duplicatesEnabled bool
 	// readyNote is logged right after the startup status line.
 	readyNote string
 	// confirmDuplicate asks the user about a probable duplicate; nil =
@@ -72,6 +77,16 @@ type App struct {
 	logFile *applog.Logger
 	// logFileErr explains why file logging is off (nil when it works).
 	logFileErr error
+
+	// qualityJournal is the persistent FLAC-monitor cache; nil when the
+	// .env path is unknown.
+	qualityJournal *quality.Journal
+	qualityPath    string
+	// qualityMu guards checking, checkCancel and found.
+	qualityMu   sync.Mutex
+	checking    bool
+	checkCancel context.CancelFunc
+	found       []quality.FoundItem
 }
 
 // SetLogFile attaches the diagnostic file log. Called by main before the
@@ -114,6 +129,7 @@ func NewApp() *App {
 // both at startup and by SaveSettings (hot reload, no restart). Status
 // lines land in a.ready/a.readyNote for the caller to log.
 func (a *App) apply(cfg config.Config) {
+	a.cancelQualityCheck()
 	a.cfg = cfg
 	a.addLogSecret(cfg.Token)
 	a.ready = ""
@@ -122,9 +138,21 @@ func (a *App) apply(cfg config.Config) {
 	if cfg.OutputDir != "" {
 		a.outputDir = cfg.OutputDir
 	}
+	if a.envPath != "" {
+		jp := filepath.Join(filepath.Dir(a.envPath), "flac-quality.json")
+		if a.qualityJournal == nil || a.qualityPath != jp {
+			a.qualityJournal = quality.NewJournal(jp)
+			a.qualityPath = jp
+		}
+	} else {
+		a.qualityJournal = nil
+		a.qualityPath = ""
+	}
 	// Пересобираем с нуля: LIBRARY_DIR мог стать пустым или смениться.
 	a.index = nil
+	a.duplicatesEnabled = false
 	a.setupLibrary(a.envPath, cfg.LibraryDir)
+	a.refreshPendingQuality()
 	if cfg.Token == "" {
 		a.client = nil
 		a.ready = "токен пуст — доступно только 30-секундное превью; открой «⚙ Настройки → Как получить токен?»"
@@ -159,19 +187,32 @@ func (a *App) attachIndex(c *downloader.Client) {
 }
 
 // setupLibrary builds the collection index when LIBRARY_DIR is set and
-// points at a real folder. An invalid path disables the feature with a
-// Russian note in the log; an empty parameter keeps everything off.
+// points at a real folder, or when the FLAC monitor needs OUTPUT_DIR.
+// An invalid collection path disables duplicate checks with a Russian
+// note; the monitor can still work over the downloads folder.
 func (a *App) setupLibrary(envPath, libraryDir string) {
 	libraryDir = strings.TrimSpace(libraryDir)
-	if libraryDir == "" {
+	a.duplicatesEnabled = libraryDir != ""
+	if libraryDir == "" && !a.cfg.FlacMonitor {
 		return
 	}
-	if st, err := os.Stat(libraryDir); err != nil || !st.IsDir() {
-		a.readyNote = fmt.Sprintf("[index] папка коллекции не найдена: %s — проверка дублей выключена", libraryDir)
-		return
+
+	var roots []string
+	if libraryDir != "" {
+		if st, err := os.Stat(libraryDir); err != nil || !st.IsDir() {
+			a.duplicatesEnabled = false
+			a.readyNote = fmt.Sprintf("[index] папка коллекции не найдена: %s — проверка дублей выключена", libraryDir)
+			if !a.cfg.FlacMonitor {
+				return
+			}
+			a.readyNote += "; мониторинг FLAC работает по папке загрузок"
+		} else {
+			roots = append(roots, libraryDir)
+		}
 	}
+	roots = append(roots, a.outputDir)
 	cachePath := filepath.Join(filepath.Dir(envPath), "library-index.json")
-	a.index = library.New(cachePath, libraryDir, a.outputDir)
+	a.index = library.New(cachePath, roots...)
 }
 
 // addLogSecret tells the file logger to hide token in every message.
@@ -274,8 +315,20 @@ func (a *App) Startup(ctx context.Context) {
 	}
 	if a.index != nil {
 		// Полное сканирование — в фоне: окно живое, ход в логе.
-		go a.index.Refresh(func(s string) { a.log(s, "info") })
+		go func() {
+			a.index.Refresh(func(s string) { a.log(s, "info") })
+			a.refreshPendingQuality()
+			a.maybeAutoCheck()
+		}()
+	} else {
+		a.refreshPendingQuality()
+		a.maybeAutoCheck()
 	}
+	go a.autoCheckLoop(ctx)
+	go func() {
+		<-ctx.Done()
+		a.cancelQualityCheck()
+	}()
 }
 
 // Default window size for a first launch, i.e. when .env carries no
@@ -300,6 +353,7 @@ func (a *App) InitialSize() (int, int) {
 // maximised/fullscreen window is skipped: only the last normal size is
 // worth restoring.
 func (a *App) BeforeClose(ctx context.Context) bool {
+	a.cancelQualityCheck()
 	if !runtime.WindowIsNormal(ctx) {
 		return false
 	}
@@ -410,7 +464,7 @@ func formatEvent(e downloader.Event) (string, string) {
 // already in the collection. True = the download may proceed. Runs for
 // single tracks and per track of a playlist.
 func (a *App) checkDuplicate(t *downloader.Track) bool {
-	if a.index == nil || t == nil {
+	if !a.duplicatesEnabled || a.index == nil || t == nil {
 		return true
 	}
 	if a.index.Scanning() {
@@ -511,7 +565,7 @@ func (a *App) AnswerDuplicate(accept bool) {
 // Declined tracks are logged and dropped; the rest (including the
 // unavailable ones, which need no question) go through as before.
 func (a *App) filterDuplicates(tracks []*downloader.Track) []*downloader.Track {
-	if a.index == nil {
+	if !a.duplicatesEnabled || a.index == nil {
 		return tracks
 	}
 	var out []*downloader.Track
@@ -1038,6 +1092,12 @@ type Settings struct {
 	Subdirs        bool
 	SubdirTemplate string
 	ExportM3U      bool
+	// FLAC monitor. QualityText/Checking/Pending are read-only fields
+	// filled by GetSettings for the status line.
+	FlacMonitor     bool
+	QualityText     string
+	QualityChecking bool
+	QualityPending  int
 }
 
 // GetSettings returns the currently applied configuration with defaults
@@ -1060,18 +1120,23 @@ func (a *App) GetSettings() (Settings, error) {
 	if subdirTemplate == "" {
 		subdirTemplate = "%artist%/%album%"
 	}
+	qs := a.qualityStatusView()
 	return Settings{
-		Token:          cfg.Token,
-		OutputDir:      out,
-		LibraryDir:     cfg.LibraryDir,
-		Workers:        workers,
-		ConvertM4A:     cfg.ConvertM4A,
-		EmbedCover:     cfg.EmbedCover,
-		EmbedLyrics:    cfg.EmbedLyrics,
-		SaveLRC:        cfg.SaveLRC,
-		Subdirs:        cfg.Subdirs,
-		SubdirTemplate: subdirTemplate,
-		ExportM3U:      cfg.ExportM3U,
+		Token:           cfg.Token,
+		OutputDir:       out,
+		LibraryDir:      cfg.LibraryDir,
+		Workers:         workers,
+		ConvertM4A:      cfg.ConvertM4A,
+		EmbedCover:      cfg.EmbedCover,
+		EmbedLyrics:     cfg.EmbedLyrics,
+		SaveLRC:         cfg.SaveLRC,
+		Subdirs:         cfg.Subdirs,
+		SubdirTemplate:  subdirTemplate,
+		ExportM3U:       cfg.ExportM3U,
+		FlacMonitor:     cfg.FlacMonitor,
+		QualityText:     qs.Text,
+		QualityChecking: qs.Checking,
+		QualityPending:  qs.Pending,
 	}, nil
 }
 
@@ -1125,6 +1190,7 @@ func (a *App) SaveSettings(s Settings) error {
 		"SUBDIRS":          strconv.FormatBool(s.Subdirs),
 		"SUBDIR_TEMPLATE":  subdirTemplate,
 		"EXPORT_M3U":       strconv.FormatBool(s.ExportM3U),
+		"FLAC_MONITOR":     strconv.FormatBool(s.FlacMonitor),
 	}
 	// Сначала файл, потом память: ошибка записи ничего не меняет.
 	if err := config.Write(a.envPath, updates); err != nil {
@@ -1142,6 +1208,7 @@ func (a *App) SaveSettings(s Settings) error {
 		Subdirs:        s.Subdirs,
 		SubdirTemplate: subdirTemplate,
 		ExportM3U:      s.ExportM3U,
+		FlacMonitor:    s.FlacMonitor,
 	}
 	a.apply(cfg)
 	if a.ready != "" {
@@ -1154,5 +1221,6 @@ func (a *App) SaveSettings(s Settings) error {
 		// Новый LIBRARY_DIR: полное сканирование в фоне, как при старте.
 		go a.index.Refresh(func(s string) { a.log(s, "info") })
 	}
+	a.maybeAutoCheck()
 	return nil
 }

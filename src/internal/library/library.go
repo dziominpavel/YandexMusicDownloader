@@ -10,17 +10,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"yamdl/internal/norm"
 )
 
 // cacheVersion marks the on-disk schema; an unknown version is ignored
-// and the index is rebuilt from scratch.
-const cacheVersion = 1
+// and the index is rebuilt from scratch. Version 2 adds TrackID/SourceURL.
+const cacheVersion = 2
 
 // Entry is one indexed audio file.
 type Entry struct {
@@ -33,6 +35,11 @@ type Entry struct {
 	TitleKey   string `json:"title_key"`   // normalized for comparison
 	ArtistsKey string `json:"artists_key"` // order-independent key
 	Matchable  bool   `json:"matchable"`   // has a usable title
+	// TrackID and SourceURL come from the file's own tags. They are
+	// empty for files from other downloaders; such files still
+	// participate in duplicate matching.
+	TrackID   string `json:"track_id,omitempty"`
+	SourceURL string `json:"source_url,omitempty"`
 }
 
 type cacheDoc struct {
@@ -130,7 +137,15 @@ func (ix *Index) collect() map[string]fileMeta {
 			continue
 		}
 		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() {
+				// _old is the archive of replaced files: it must not
+				// feed duplicate checks or the quality monitor.
+				if d.Name() == "_old" {
+					return filepath.SkipDir
+				}
 				return nil
 			}
 			ext := strings.ToLower(filepath.Ext(path))
@@ -180,26 +195,58 @@ func (ix *Index) Refresh(log func(string)) {
 	sort.Strings(toRead)
 
 	roots := strings.Join(ix.roots, "; ")
-	log(fmtIndexLine(roots, base, len(files)))
+	var logMu sync.Mutex
+	logLine := func(done int) {
+		logMu.Lock()
+		log(fmtIndexLine(roots, done, len(files)))
+		logMu.Unlock()
+	}
+	logLine(base)
 
 	start := time.Now()
 	step := len(toRead) / 10
 	if step < 1 {
 		step = 1
 	}
-	read := 0
-	for i, path := range toRead {
-		fm := files[path]
-		e := readEntry(path, fm)
-		ix.mu.Lock()
-		ix.entries[e.Path] = e
-		ix.scanned = base + i + 1
-		ix.mu.Unlock()
-		read++
-		if (i+1)%step == 0 && i+1 < len(toRead) {
-			log(fmtIndexLine(roots, base+i+1, len(files)))
-		}
+	// Tag parsing is mostly disk/CPU work per file, so read several files
+	// in parallel. The index map itself stays protected by ix.mu.
+	workers := runtime.NumCPU()
+	if workers > 8 {
+		workers = 8
 	}
+	if workers > len(toRead) {
+		workers = len(toRead)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+
+	jobs := make(chan string)
+	var wg sync.WaitGroup
+	var processed atomic.Int64
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for path := range jobs {
+				e := readEntry(path, files[path])
+				n := int(processed.Add(1))
+				ix.mu.Lock()
+				ix.entries[e.Path] = e
+				ix.scanned = base + n
+				ix.mu.Unlock()
+				if n%step == 0 && n < len(toRead) {
+					logLine(base + n)
+				}
+			}
+		}()
+	}
+	for _, path := range toRead {
+		jobs <- path
+	}
+	close(jobs)
+	wg.Wait()
+	read := len(toRead)
 
 	ix.save()
 	ix.mu.Lock()
@@ -225,7 +272,8 @@ func readEntry(path string, fm fileMeta) Entry {
 	e := Entry{
 		Path: path, Size: fm.size, MTime: fm.mtime, Ext: fm.ext,
 	}
-	artists, title := readTags(path, fm.ext)
+	tags := readTags(path, fm.ext)
+	artists, title := tags.Artists, tags.Title
 	if strings.TrimSpace(title) == "" {
 		artists, title = fromFilename(filepath.Base(path))
 	}
@@ -234,7 +282,31 @@ func readEntry(path string, fm fileMeta) Entry {
 	e.TitleKey = norm.Comparable(title)
 	e.ArtistsKey = norm.ArtistsKey(artists)
 	e.Matchable = e.TitleKey != ""
+	e.TrackID = tags.TrackID
+	e.SourceURL = tags.SourceURL
 	return e
+}
+
+// Snapshot returns a copy of every indexed entry, sorted by path. The
+// quality checker uses it instead of holding the index lock while it
+// talks to the network.
+func (ix *Index) Snapshot() []Entry {
+	ix.mu.Lock()
+	out := make([]Entry, 0, len(ix.entries))
+	for _, e := range ix.entries {
+		out = append(out, e)
+	}
+	ix.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// RemoveFile drops one path from the in-memory index. The cache is
+// rewritten on the next Refresh; a missing file is removed there too.
+func (ix *Index) RemoveFile(path string) {
+	ix.mu.Lock()
+	delete(ix.entries, path)
+	ix.mu.Unlock()
 }
 
 // AddFile indexes one freshly published file without rescanning, so a

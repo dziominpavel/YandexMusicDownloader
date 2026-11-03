@@ -20,6 +20,47 @@ const (
 	artistWeight  = 0.3
 )
 
+// CandidateScore is the confidence of one search result. Unlike
+// FindMatches (which catches covers by title alone), a search match
+// must agree on both title and artists: a different artist means a
+// different recording, not an upgrade.
+type CandidateScore struct {
+	TitlePercent  int
+	ArtistPercent int
+	Percent       int  // the weaker of the two
+	Exact         bool // normalized title and artists are equal
+}
+
+// ScoreCandidate compares a local file's metadata with one search
+// result. It returns ok=false when either side lacks a usable title or
+// artist, or when similarity is below the search thresholds.
+func ScoreCandidate(localArtists []string, localTitle string, candArtists []string, candTitle string) (CandidateScore, bool) {
+	titleKey := norm.Comparable(localTitle)
+	candTitleKey := norm.Comparable(candTitle)
+	if titleKey == "" || candTitleKey == "" {
+		return CandidateScore{}, false
+	}
+	titleSim := similarityCapped([]rune(titleKey), []rune(candTitleKey), minTitleSim)
+	if titleSim < 0 {
+		return CandidateScore{}, false
+	}
+	artistKey := norm.ArtistsKey(localArtists)
+	candArtistKey := norm.ArtistsKey(candArtists)
+	if artistKey == "" || candArtistKey == "" {
+		return CandidateScore{}, false
+	}
+	artistSim := similarityCapped([]rune(artistKey), []rune(candArtistKey), minArtistSim)
+	if artistSim < 0 {
+		return CandidateScore{}, false
+	}
+	return CandidateScore{
+		TitlePercent:  int(math.Round(titleSim * 100)),
+		ArtistPercent: int(math.Round(artistSim * 100)),
+		Percent:       int(math.Round(math.Min(titleSim, artistSim) * 100)),
+		Exact:         titleKey == candTitleKey && artistKey == candArtistKey,
+	}, true
+}
+
 // Match is one duplicate candidate found in the index.
 type Match struct {
 	Path    string // full path of the found file

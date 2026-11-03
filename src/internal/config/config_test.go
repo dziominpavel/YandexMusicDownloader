@@ -269,6 +269,40 @@ func TestLoadBehaviorFlags(t *testing.T) {
 	}
 }
 
+func TestLoadFlacMonitor(t *testing.T) {
+	cases := []struct {
+		body string
+		want bool
+	}{
+		{"", false},
+		{"FLAC_MONITOR=true", true},
+		{"FLAC_MONITOR=TRUE", true},
+		{"FLAC_MONITOR=1", true},
+		{"FLAC_MONITOR=yes", true},
+		{"FLAC_MONITOR=on", true},
+		{"FLAC_MONITOR=false", false},
+		{"FLAC_MONITOR=0", false},
+		{"FLAC_MONITOR=no", false},
+		{"FLAC_MONITOR=off", false},
+		{"FLAC_MONITOR=maybe", false},
+		{"FLAC_MONITOR=", false},
+	}
+	for _, c := range cases {
+		dir := t.TempDir()
+		p := filepath.Join(dir, ".env")
+		if err := os.WriteFile(p, []byte(c.body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("body %q: %v", c.body, err)
+		}
+		if cfg.FlacMonitor != c.want {
+			t.Errorf("body %q: FlacMonitor = %v, want %v", c.body, cfg.FlacMonitor, c.want)
+		}
+	}
+}
+
 func TestLoadPlaylistWorkers(t *testing.T) {
 	cases := []struct {
 		body string

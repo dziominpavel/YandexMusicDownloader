@@ -44,6 +44,12 @@ func (c *Client) Stopped() bool {
 	return c.stop.Load()
 }
 
+// JobContext returns the context carried by the current job. The quality
+// upgrader passes it to Upgrade so «Остановить» cancels the probe too.
+func (c *Client) JobContext() context.Context {
+	return c.reqCtx()
+}
+
 // reqCtx is the context every request carries (see newRequest). Canceling
 // it is what makes «Остановить» break sockets mid-transfer.
 func (c *Client) reqCtx() context.Context {

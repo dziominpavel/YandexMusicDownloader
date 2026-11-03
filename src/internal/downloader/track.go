@@ -25,6 +25,10 @@ var ErrAlreadyExists = errors.New("track file already exists")
 // ErrNoDownloadOptions means the API returned no usable audio source.
 var ErrNoDownloadOptions = errors.New("no download options available")
 
+// ErrDestConflict means the upgrade destination already exists and belongs
+// to another track.
+var ErrDestConflict = errors.New("destination file belongs to another track")
+
 // Track is the metadata subset needed for download and tagging.
 type Track struct {
 	ID         string
@@ -79,6 +83,16 @@ type TagFunc func(path string, track *Track) error
 type Client struct {
 	token string
 	http  *http.Client
+	// BaseURL overrides the API host (tests). Empty means apiBase.
+	BaseURL string
+	// accountMu caches account/status: the uid is needed by every
+	// lossless request, and the Plus flag by the quality monitor.
+	accountMu   sync.Mutex
+	accountID   int64
+	accountPlus bool
+	accountSet  bool
+	// probeFn, when set, replaces the network probe (tests).
+	probeFn func(context.Context, string) (Probe, error)
 	// Tag runs between download and publish; nil skips tagging.
 	Tag TagFunc
 	// ConvertM4A turns ALAC-in-M4A lossless into plain FLAC via the
@@ -145,11 +159,25 @@ func (c *Client) runTagHook(path string, track *Track) error {
 	return nil
 }
 
+// baseURL returns the API host, allowing tests to point at httptest.
+func (c *Client) baseURL() string {
+	if c.BaseURL != "" {
+		return c.BaseURL
+	}
+	return apiBase
+}
+
 // newRequest builds an API request with the required headers. The
 // request carries the job's context: «Остановить» cancels it and the
 // transfer breaks mid-flight (see stop.go).
 func (c *Client) newRequest(method, url string) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(c.reqCtx(), method, url, nil)
+	return c.newRequestWithContext(c.reqCtx(), method, url)
+}
+
+// newRequestWithContext is newRequest with an explicit context, used by
+// the quality probe/search paths that must not inherit a download job.
+func (c *Client) newRequestWithContext(ctx context.Context, method, url string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		return nil, err
 	}

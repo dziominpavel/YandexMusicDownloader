@@ -51,6 +51,9 @@ type Config struct {
 	// LibraryDir is the user's music collection root (LIBRARY_DIR).
 	// Empty = collection indexing and duplicate checks are off.
 	LibraryDir string
+	// FlacMonitor enables the background FLAC quality monitor
+	// (FLAC_MONITOR). Default false: the feature is opt-in.
+	FlacMonitor bool
 	// EmbedLyrics embeds lyrics into tags by default.
 	EmbedLyrics bool
 	// SaveLRC saves synchronized lyrics as .lrc next to file.
@@ -124,6 +127,11 @@ func Load(path string) (Config, error) {
 			cfg.WindowHeight = parseWindowDim(v, minWindowHeight, maxWindowHeight)
 		case "LIBRARY_DIR":
 			cfg.LibraryDir = v
+		case "FLAC_MONITOR":
+			switch strings.ToLower(v) {
+			case "1", "true", "yes", "on":
+				cfg.FlacMonitor = true
+			}
 		case "PLAYLIST_WORKERS":
 			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 1 && n <= MaxWorkers {
 				cfg.Workers = n
