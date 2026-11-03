@@ -38,9 +38,13 @@ type App struct {
 	index *library.Index
 	// readyNote is logged right after the startup status line.
 	readyNote string
-	// confirm asks the user about a probable duplicate; nil = native
-	// Wails dialog. Tests substitute it.
-	confirm func(msg string) bool
+	// confirmDuplicate asks the user about a probable duplicate; nil =
+	// the in-window duplicate dialog. Tests substitute it.
+	confirmDuplicate func(duplicatePrompt) bool
+	// dupMu guards dupReply, the pending answer channel of the open
+	// in-window duplicate dialog (only one prompt at a time).
+	dupMu    sync.Mutex
+	dupReply chan bool
 	// logSink, when set, captures log lines instead of emitting events.
 	logSink func(text, kind string)
 	// eventSink, when set, captures named frontend events (job-start,
@@ -418,61 +422,88 @@ func (a *App) checkDuplicate(t *downloader.Track) bool {
 	if len(matches) == 0 {
 		return true
 	}
-	return a.askConfirm(duplicateMessage(t, matches[0]))
+	return a.askDuplicate(duplicatePromptFor(t, matches[0]))
 }
 
-// duplicateMessage is the warning text: a probable duplicate, never a
-// verdict — the percentage and both files are shown so the user decides.
-func duplicateMessage(t *downloader.Track, m library.Match) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Возможен дубль — совпадение %d%%.\n\n", m.Percent)
-	fmt.Fprintf(&b, "Сейчас скачивается: %s\n", t.Label())
-	fmt.Fprintf(&b, "В коллекции: %s\n", m.Path)
-	if ext := strings.TrimPrefix(strings.ToLower(m.Ext), "."); ext != "" && ext != "flac" && ext != "m4a" {
-		fmt.Fprintf(&b, "Внимание: найденный файл в формате %s — может получиться один трек в двух форматах.\n", ext)
+// duplicatePrompt is the data behind the duplicate warning: a probable
+// duplicate, never a verdict — the percentage and both files are shown so
+// the user decides. FileName is split from FilePath so the window can make
+// the found file obvious while still showing the full path.
+type duplicatePrompt struct {
+	Percent         int    `json:"percent"`
+	Track           string `json:"track"`
+	FileName        string `json:"fileName"`
+	FilePath        string `json:"filePath"`
+	FileExt         string `json:"fileExt"`
+	DifferentFormat bool   `json:"differentFormat"`
+}
+
+func duplicatePromptFor(t *downloader.Track, m library.Match) duplicatePrompt {
+	p := duplicatePrompt{
+		Percent:  m.Percent,
+		Track:    t.Label(),
+		FileName: filepath.Base(m.Path),
+		FilePath: m.Path,
+		FileExt:  strings.TrimPrefix(strings.ToLower(m.Ext), "."),
 	}
-	b.WriteString("\nСкачать всё равно?")
-	return b.String()
+	p.DifferentFormat = p.FileExt != "" && p.FileExt != "flac" && p.FileExt != "m4a"
+	return p
 }
 
-// askConfirm shows the native question dialog (or the test substitute).
-// The answer goes through confirmAnswer — never a label comparison here:
-// Windows ignores our Buttons and answers Yes/No (see confirmAnswer).
-// Errors fall back to "proceed": the check must not block downloads.
-func (a *App) askConfirm(msg string) bool {
-	if a.confirm != nil {
-		return a.confirm(msg)
+// askDuplicate asks the question in the app window and waits for the
+// answer. Tests substitute confirmDuplicate; a window that never started
+// (ctx == nil) lets the download proceed, as the old fallback did.
+func (a *App) askDuplicate(p duplicatePrompt) bool {
+	if a.confirmDuplicate != nil {
+		return a.confirmDuplicate(p)
 	}
 	if a.ctx == nil {
 		return true
 	}
-	res, err := runtime.MessageDialog(a.ctx, runtime.MessageDialogOptions{
-		Type:          runtime.QuestionDialog,
-		Title:         "Возможен дубль",
-		Message:       msg,
-		Buttons:       []string{"Скачать", "Отмена"},
-		DefaultButton: "Скачать",
-		CancelButton:  "Отмена",
-	})
-	if err != nil {
-		return true
-	}
-	return confirmAnswer(res)
+	return a.askFrontend(p)
 }
 
-// confirmAnswer interprets a native dialog answer. The platforms Wails
-// runs on disagree: Windows discards the custom Buttons option and
-// answers "Yes"/"No" (MB_YESNO), Linux answers "Yes"/"No"/"Cancel" or ""
-// for a dismissed dialog, macOS echoes the labels we set ("Скачать"/
-// "Отмена"). So only a definite "no" declines; every other answer —
-// including an unexpected one — proceeds, because a dialog quirk must
-// never turn into a silently skipped download.
-func confirmAnswer(res string) bool {
-	switch strings.ToLower(strings.TrimSpace(res)) {
-	case "", "no", "n", "нет", "отмена", "cancel":
-		return false
-	default:
+// askFrontend emits the prompt and blocks until the user answers or the
+// window goes away. Only one prompt may be open: a second one proceeds
+// without asking rather than deadlocking the caller.
+func (a *App) askFrontend(p duplicatePrompt) bool {
+	reply := make(chan bool, 1)
+	a.dupMu.Lock()
+	if a.dupReply != nil {
+		a.dupMu.Unlock()
 		return true
+	}
+	a.dupReply = reply
+	a.dupMu.Unlock()
+	defer func() {
+		a.dupMu.Lock()
+		if a.dupReply == reply {
+			a.dupReply = nil
+		}
+		a.dupMu.Unlock()
+	}()
+
+	a.emit("duplicate-prompt", p)
+	select {
+	case ok := <-reply:
+		return ok
+	case <-a.ctx.Done():
+		return true
+	}
+}
+
+// AnswerDuplicate is called by the duplicate window: true lets the track
+// download, false skips it. Safe to call when no prompt is open.
+func (a *App) AnswerDuplicate(accept bool) {
+	a.dupMu.Lock()
+	reply := a.dupReply
+	a.dupReply = nil
+	a.dupMu.Unlock()
+	if reply != nil {
+		select {
+		case reply <- accept:
+		default:
+		}
 	}
 }
 

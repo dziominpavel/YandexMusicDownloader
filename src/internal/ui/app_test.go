@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,9 +116,9 @@ func TestDownloadBadLink(t *testing.T) {
 
 func TestCheckDuplicateBranching(t *testing.T) {
 	ix := testIndex(t, "Исполнитель A - Песня.flac")
-	var asked []string
-	a := &App{index: ix, confirm: func(msg string) bool {
-		asked = append(asked, msg)
+	var asked []duplicatePrompt
+	a := &App{index: ix, confirmDuplicate: func(p duplicatePrompt) bool {
+		asked = append(asked, p)
 		return false
 	}}
 
@@ -128,14 +129,22 @@ func TestCheckDuplicateBranching(t *testing.T) {
 	if len(asked) != 1 {
 		t.Fatalf("want exactly one dialog, got %d", len(asked))
 	}
-	for _, want := range []string{"Возможен дубль", "100%", "Песня.flac", "Скачать всё равно"} {
-		if !strings.Contains(asked[0], want) {
-			t.Errorf("dialog text must contain %q, got:\n%s", want, asked[0])
-		}
+	p := asked[0]
+	if p.Percent != 100 {
+		t.Errorf("dialog must show the match percent, got %d", p.Percent)
+	}
+	if p.Track != "Исполнитель A — Песня" {
+		t.Errorf("dialog must name the incoming track, got %q", p.Track)
+	}
+	if p.FileName != "Исполнитель A - Песня.flac" {
+		t.Errorf("dialog must name the found file, got %q", p.FileName)
+	}
+	if !strings.HasSuffix(p.FilePath, p.FileName) {
+		t.Errorf("dialog must carry the full path, got %q", p.FilePath)
 	}
 
 	// Подтверждение → скачивание продолжается.
-	a.confirm = func(string) bool { return true }
+	a.confirmDuplicate = func(duplicatePrompt) bool { return true }
 	if !a.checkDuplicate(match) {
 		t.Fatal("confirmed duplicate must proceed")
 	}
@@ -151,37 +160,38 @@ func TestCheckDuplicateBranching(t *testing.T) {
 	}
 }
 
-func TestDuplicateMessageMentionsFormat(t *testing.T) {
-	ix := testIndex(t, "Исполнитель A - Песня.mp3")
-	var msg string
-	a := &App{index: ix, confirm: func(m string) bool { msg = m; return true }}
-	tr := &downloader.Track{Artists: []string{"Исполнитель A"}, Title: "Песня"}
-	a.checkDuplicate(tr)
-	if !strings.Contains(msg, "в формате mp3") || !strings.Contains(msg, "двух форматах") {
-		t.Fatalf("format mismatch must be called out, got:\n%s", msg)
+// Окно не нативное, поэтому проверяем сам мост: Go ждёт ответа
+// AnswerDuplicate, а не показывает системный MessageBox.
+func TestDuplicatePromptWaitsForFrontendAnswer(t *testing.T) {
+	ix := testIndex(t, "Исполнитель A - Песня.flac")
+	a := &App{index: ix, ctx: context.Background()}
+	var got duplicatePrompt
+	a.eventSink = func(name string, args ...any) {
+		if name != "duplicate-prompt" {
+			t.Fatalf("unexpected event %q", name)
+		}
+		got = args[0].(duplicatePrompt)
+		a.AnswerDuplicate(false)
 	}
+	if a.checkDuplicate(&downloader.Track{Artists: []string{"Исполнитель A"}, Title: "Песня"}) {
+		t.Fatal("the frontend declined the download, it must not proceed")
+	}
+	if got.FileName != "Исполнитель A - Песня.flac" {
+		t.Fatalf("frontend got no file name: %+v", got)
+	}
+
+	// Повторный ответ без открытого окна ничего не ломает.
+	a.AnswerDuplicate(true)
 }
 
-// Нативный диалог отдаёт разные надписи в зависимости от платформы:
-// Windows игнорирует наши Buttons и отвечает Yes/No, macOS — возвращает
-// наши метки. Регрессия: res == "Скачать" давал false на Windows, и
-// любой ответ превращался в "отменено пользователем".
-func TestConfirmAnswerAcrossPlatforms(t *testing.T) {
-	yes := []string{"Yes", "yes", " Скачать ", "СКАЧАТЬ", "Да", "OK"}
-	no := []string{"No", "NO", "Отмена", "отмена", "Cancel", "cancel", "", "   ", "нет"}
-	for _, res := range yes {
-		if !confirmAnswer(res) {
-			t.Errorf("%q must confirm the download", res)
-		}
-	}
-	for _, res := range no {
-		if confirmAnswer(res) {
-			t.Errorf("%q must decline the download", res)
-		}
-	}
-	// Неизвестный ответ не должен блокировать скачивание.
-	if !confirmAnswer("Error") {
-		t.Error("unknown answer must not block the download")
+func TestDuplicatePromptMentionsFormat(t *testing.T) {
+	ix := testIndex(t, "Исполнитель A - Песня.mp3")
+	var got duplicatePrompt
+	a := &App{index: ix, confirmDuplicate: func(p duplicatePrompt) bool { got = p; return true }}
+	tr := &downloader.Track{Artists: []string{"Исполнитель A"}, Title: "Песня"}
+	a.checkDuplicate(tr)
+	if !got.DifferentFormat || got.FileExt != "mp3" {
+		t.Fatalf("format mismatch must be called out, got %+v", got)
 	}
 }
 
@@ -197,7 +207,9 @@ func TestFilterDuplicatesPlaylist(t *testing.T) {
 	a := &App{
 		index:   ix,
 		logSink: func(text, kind string) { logs = append(logs, text) },
-		confirm: func(msg string) bool { return !strings.Contains(msg, "Песня 1") },
+		confirmDuplicate: func(p duplicatePrompt) bool {
+			return !strings.Contains(p.Track, "Песня 1")
+		},
 	}
 	tracks := []*downloader.Track{
 		{ID: "1", Artists: []string{"Исполнитель A"}, Title: "Песня 1", Available: true},
@@ -253,7 +265,10 @@ func TestOnPublishedAddsDownloadedFile(t *testing.T) {
 func TestNoIndexNoQuestions(t *testing.T) {
 	a := &App{
 		logSink: func(text, kind string) { t.Errorf("unexpected log: %s", text) },
-		confirm: func(string) bool { t.Error("unexpected dialog"); return false },
+		confirmDuplicate: func(duplicatePrompt) bool {
+			t.Error("unexpected dialog")
+			return false
+		},
 	}
 	tracks := []*downloader.Track{
 		{ID: "1", Artists: []string{"A"}, Title: "T", Available: true},
@@ -290,7 +305,9 @@ func TestCheckDuplicateWarnsWhileScanning(t *testing.T) {
 	a := &App{
 		index:   ix,
 		logSink: func(text, kind string) { logs = append(logs, text) },
-		confirm: func(string) bool { return true },
+		confirmDuplicate: func(duplicatePrompt) bool {
+			return true
+		},
 	}
 	// Проверка внутри лог-колбэка Refresh: scanning == true ровно там.
 	var checked bool

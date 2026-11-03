@@ -100,6 +100,19 @@
   #settingsError { color: #ff7b72; font-size: 13px; min-height: 16px; margin-top: 6px; white-space: pre-wrap; }
   .sbuttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
   .sbuttons button { padding: 7px 16px; font-size: 14px; cursor: pointer; }
+
+  /* Окно возможного дубля: имя найденного файла отдельно, полный путь
+     переносится по любому символу и остаётся видимым целиком. */
+  #dupOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 30; }
+  #dupOverlay.open { display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; }
+  #dupCard { background: #252526; border: 1px solid #3c3c3c; border-radius: 6px; padding: 18px 20px; width: 560px; max-width: 92vw; max-height: 90vh; overflow-y: auto; box-sizing: border-box; }
+  #dupCard h3 { margin: 0 0 10px; font-size: 16px; }
+  .dupLead { margin: 0 0 14px; font-size: 13px; color: #aaa; line-height: 1.4; }
+  .dupBlock { margin-bottom: 12px; }
+  .dupLabel { display: block; font-size: 12px; color: #aaa; margin-bottom: 3px; }
+  .dupName { font-size: 14px; color: #eee; font-weight: 600; overflow-wrap: anywhere; user-select: text; }
+  .dupPath { margin-top: 3px; font-family: Consolas, monospace; font-size: 12px; color: #79c0ff; overflow-wrap: anywhere; word-break: break-all; user-select: text; }
+  .dupWarn { margin: 2px 0 0; color: #e3b341; font-size: 13px; line-height: 1.4; }
 </style>
 </head>
 <body>
@@ -209,6 +222,27 @@
     <div class="sbuttons">
       <button type="button" id="tokenHelpOAuth">Открыть страницу OAuth</button>
       <button type="button" id="tokenHelpClose">Понятно</button>
+    </div>
+  </div>
+</div>
+
+<div id="dupOverlay" aria-hidden="true">
+  <div id="dupCard" role="dialog" aria-modal="true" aria-labelledby="dupTitle" tabindex="-1">
+    <h3 id="dupTitle">Возможен дубль — <span id="dupPercent"></span></h3>
+    <p class="dupLead">Похожий файл уже есть в коллекции. Проверьте, тот ли это трек.</p>
+    <div class="dupBlock">
+      <span class="dupLabel">Сейчас скачивается</span>
+      <div class="dupName" id="dupTrack"></div>
+    </div>
+    <div class="dupBlock">
+      <span class="dupLabel">Похожий файл в коллекции</span>
+      <div class="dupName" id="dupMatchName"></div>
+      <div class="dupPath" id="dupMatchPath"></div>
+    </div>
+    <p class="dupWarn" id="dupFormat" hidden></p>
+    <div class="sbuttons">
+      <button type="button" id="dupNo">Отмена</button>
+      <button type="button" id="dupYes">Скачать всё равно</button>
     </div>
   </div>
 </div>
@@ -527,6 +561,62 @@
         text.startsWith('[error] ') || text.startsWith('[stopped] ')) hideRowsByLabel(text);
   });
   window.runtime.EventsOn('progress', (id, label, pct, done, total) => progress(id, label, pct, done, total));
+
+  // --- Возможный дубль: своё окно вместо системного MessageBox ---
+  // Системный диалог обрезал длинные пути; здесь имя найденного файла
+  // показано отдельно, а полный путь переносится и его видно целиком.
+  const dupOverlay = document.getElementById('dupOverlay');
+  const dupPercent = document.getElementById('dupPercent');
+  const dupTrack = document.getElementById('dupTrack');
+  const dupMatchName = document.getElementById('dupMatchName');
+  const dupMatchPath = document.getElementById('dupMatchPath');
+  const dupFormat = document.getElementById('dupFormat');
+  const dupYes = document.getElementById('dupYes');
+  let dupOpen = false;
+
+  function onDupKey(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      answerDup(false);
+    }
+  }
+  function openDup(p) {
+    dupPercent.textContent = p.percent + '%';
+    dupTrack.textContent = p.track || '';
+    dupMatchName.textContent = p.fileName || '';
+    dupMatchPath.textContent = p.filePath || '';
+    dupMatchPath.title = p.filePath || '';
+    dupFormat.hidden = !p.differentFormat;
+    if (p.differentFormat) {
+      dupFormat.textContent = 'Найденный файл в формате ' + String(p.fileExt || '').toUpperCase() +
+        ' — может получиться один трек в двух форматах.';
+    }
+    dupOpen = true;
+    dupOverlay.classList.add('open');
+    dupOverlay.setAttribute('aria-hidden', 'false');
+    document.addEventListener('keydown', onDupKey);
+    dupYes.focus();
+  }
+  function closeDup() {
+    if (!dupOpen) return;
+    dupOpen = false;
+    dupOverlay.classList.remove('open');
+    dupOverlay.setAttribute('aria-hidden', 'true');
+    document.removeEventListener('keydown', onDupKey);
+  }
+  async function answerDup(accept) {
+    if (!dupOpen) return;
+    closeDup();
+    try {
+      await window.go.ui.App.AnswerDuplicate(accept);
+    } catch (e) {
+      line('[error] ' + e, 'err');
+    }
+  }
+  dupYes.onclick = () => answerDup(true);
+  document.getElementById('dupNo').onclick = () => answerDup(false);
+  dupOverlay.onclick = (e) => { if (e.target === dupOverlay) answerDup(false); };
+  window.runtime.EventsOn('duplicate-prompt', (p) => openDup(p));
 
   // --- Кнопка скачивания / остановки ---
   // Пока идёт job'а, кнопка не блокируется, а меняет назначение:
