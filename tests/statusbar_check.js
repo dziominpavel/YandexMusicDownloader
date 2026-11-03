@@ -23,6 +23,7 @@ function makeEl(tag) {
       if (el.id && registry[el.id] === el) delete registry[el.id];
     },
     addEventListener() {},
+    removeAttribute() {},
     focus() {},
     blur() {},
     get innerHTML() { return ''; },
@@ -57,6 +58,7 @@ const window = {
     EventsOn: (name, fn) => { handlers[name] = fn; },
   },
   go: { ui: { App: {} } },
+  addEventListener() {},
 };
 
 // Запускаем скрипт в песочнице.

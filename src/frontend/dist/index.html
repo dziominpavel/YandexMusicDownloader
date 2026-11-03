@@ -124,8 +124,7 @@
   </div>
 </div>
 <div id="row">
-  <input id="link" list="linkHistory" placeholder="Вставь ссылку на трек, альбом или плейлист. Можно несколько через пробел/перенос строки">
-  <datalist id="linkHistory"></datalist>
+  <input id="link" placeholder="Вставь ссылку на трек, альбом или плейлист. Можно несколько через пробел/перенос строки">
   <button id="dl">Скачать</button>
   <div id="statusbar">
     <div id="sbfillwrap">
@@ -275,29 +274,6 @@
     try { await window.go.ui.App.OpenOutputDir(); }
     catch (e) { line('[error] ' + e, 'err'); }
   };
-
-  // --- История последних ссылок (localStorage, максимум 20) ---
-  const historyList = document.getElementById('linkHistory');
-  const HISTORY_KEY = 'yamdl.linkHistory';
-  function loadHistory() {
-    try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
-  }
-  function renderHistory() {
-    historyList.innerHTML = '';
-    for (const item of loadHistory()) {
-      const opt = document.createElement('option');
-      opt.value = item;
-      historyList.appendChild(opt);
-    }
-  }
-  function rememberLink(link) {
-    let items = loadHistory().filter((x) => x !== link);
-    items.unshift(link);
-    items = items.slice(0, 20);
-    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(items)); } catch (e) {}
-    renderHistory();
-  }
-  renderHistory();
 
   // --- Предпросмотр ссылки: обложка и название, не блокирует скачивание ---
   const preview = document.getElementById('preview');
@@ -646,7 +622,6 @@
     }
     const link = input.value.trim();
     if (!link) return;
-    rememberLink(link);
     hidePreview();
     input.value = '';
     input.focus();

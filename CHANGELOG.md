@@ -13,12 +13,18 @@
 - Ссылка на источник в тегах содержит обычный номер альбома, без записи вида 6.73558e+06.
 - Окно возможного дубля показывает полный путь и имя найденного файла целиком, даже если путь длинный.
 
+**Изменено**
+- **BREAKING:** история последних ссылок убрана: поле ввода больше не перекрывает лог выпадающим списком.
+
 ### Добавлено
 - `add-file-log`: пакет `internal/applog` пишет все строки окна в `app.log` рядом с exe (fallback `%LOCALAPPDATA%\YandexMusicDownloader\app.log`), формат RFC 3339 + `[уровень]`, ротация 5 МиБ в `app.log.1` с одной резервной копией, редакция `OAuth ...` и зарегистрированного токена до записи в файл и окно, шапка с версией/VCS-ревизией, ОС, архитектурой и путями, строка `[log] файл: ...` при старте. Тесты: `TestWriteFormat`, `TestWriteMultiline`, `TestRedactOAuth`, `TestRedactSecretValue`, `TestRotate`, `TestRotateReplacesBackup`, `TestOpenFallback`, `TestOpenAllFail`, `TestConcurrentWrites`, `TestLogWritesFile`, `TestStartupLogsFilePath`, `TestLogRedactsToken`.
 
 ### Исправлено
 - `fallback-reason-and-album-ids`: `DownloadTrack` сохраняет причину отказа lossless (`quality`, `codec`, `bitrate` из `/get-file-info`) в `Result.FallbackReason`, пишет её в строку `[fallback MP3: ...]` и отдельной строкой `[fallback]` для плейлистов и альбомов; ID из JSON (`any`) форматируются helper'ом `idString` (`ids.go`), поэтому `float64` больше не попадает в теги в экспоненциальной записи (`track.go`, `playlist.go`). Тесты: `TestIDString`, `TestLosslessFallbackReason`, `TestJobCallbacksLogFallbackReason`, обновлён `TestFormatEvent`.
 - `duplicate-dialog-full-path`: подтверждение дубля переведено с нативного `MessageBox` (обрезал длинные пути) на окно в `src/frontend/dist/index.html`: `duplicatePrompt` (процент, трек, имя и полный путь найденного файла, формат) уходит событием `duplicate-prompt`, ответ приходит через `AnswerDuplicate`; полный путь переносится по любому символу, имя файла выделено. Тесты: `TestDuplicatePromptWaitsForFrontendAnswer`, обновлены `TestCheckDuplicateBranching` и `TestDuplicatePromptMentionsFormat`; удалён `TestConfirmAnswerAcrossPlatforms` (нативного диалога больше нет).
+
+### Изменено
+- `remove-link-history`: из `src/frontend/dist/index.html` удалены `datalist`, `list="linkHistory"` и JS-блок истории (`HISTORY_KEY`, `loadHistory`, `renderHistory`, `rememberLink`, вызов при старте скачивания); требование `track-download` обновлено, README и `tests/statusbar_check.js` поправлены. Проверки: `node tests/statusbar_check.js`, `go test ./...`, `go vet ./...`, `go build ./...`, `openspec validate remove-link-history --type change`, `openspec validate --specs`.
 
 ## [0.3.0] — 2026-10-28 (MINOR)
 
