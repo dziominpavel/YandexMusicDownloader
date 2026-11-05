@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"yamdl/internal/config"
 	"yamdl/internal/downloader"
 	"yamdl/internal/library"
+	"yamdl/internal/queue"
 )
 
 // testIndex builds an index over tagless files named "Artist - Title.ext".
@@ -26,58 +28,9 @@ func testIndex(t *testing.T, names ...string) *library.Index {
 	return ix
 }
 
-func TestFormatEvent(t *testing.T) {
-	cases := []struct {
-		in   downloader.Event
-		text string
-		kind string
-	}{
-		{downloader.Event{Kind: downloader.KindDownloading, Label: "A — T"}, "[downloading] A — T", "info"},
-		{downloader.Event{Kind: downloader.KindDone, Label: "A — T", Format: "FLAC"}, "[done] A — T (FLAC)", "done"},
-		{downloader.Event{Kind: downloader.KindDone, Label: "A — T", Format: "MP3", Fallback: true}, "[done] A — T (MP3) [fallback MP3]", "done"},
-		{downloader.Event{Kind: downloader.KindDone, Label: "A — T", Format: "MP3", Fallback: true, FallbackReason: "Яндекс вернул nq/aac-mp4 (192 kbps) вместо FLAC"}, "[done] A — T (MP3) [fallback MP3: Яндекс вернул nq/aac-mp4 (192 kbps) вместо FLAC]", "done"},
-		{downloader.Event{Kind: downloader.KindDone, Label: "A — T", Format: "FLAC", Converted: true}, "[done] A — T (FLAC) [ALAC→FLAC]", "done"},
-		{downloader.Event{Kind: downloader.KindSkipped, Label: "A — T"}, "[skip] A — T (already exists)", "info"},
-		{downloader.Event{Kind: downloader.KindSkipped, Label: "A — T", Detail: downloader.SkipDuplicate}, "[skip] A — T (duplicate)", "info"},
-		{downloader.Event{Kind: downloader.KindSkipped, Label: "A — T", Detail: downloader.SkipUnavailable}, "[skip] A — T (unavailable)", "info"},
-		{downloader.Event{Kind: downloader.KindFailed, Label: "A — T", Detail: "boom"}, "[error] A — T: boom", "err"},
-		{downloader.Event{Kind: downloader.KindStopped, Label: "A — T"}, "[stopped] A — T", "stopped"},
-	}
-	for _, c := range cases {
-		text, kind := formatEvent(c.in)
-		if text != c.text || kind != c.kind {
-			t.Errorf("got (%q,%q) want (%q,%q)", text, kind, c.text, c.kind)
-		}
-	}
-}
-
-func TestFormatTrackStatus(t *testing.T) {
-	cases := []struct {
-		in   downloader.Event
-		text string
-		kind string
-	}{
-		{downloader.Event{Kind: downloader.KindDownloading}, "[downloading]", "info"},
-		{downloader.Event{Kind: downloader.KindDone, Format: "FLAC"}, "[done] (FLAC)", "done"},
-		{downloader.Event{Kind: downloader.KindDone, Format: "MP3", Fallback: true}, "[done] (MP3) [fallback MP3]", "done"},
-		{downloader.Event{Kind: downloader.KindDone, Format: "FLAC", Converted: true}, "[done] (FLAC) [ALAC→FLAC]", "done"},
-		{downloader.Event{Kind: downloader.KindSkipped}, "[skip] (already exists)", "info"},
-		{downloader.Event{Kind: downloader.KindSkipped, Detail: downloader.SkipDuplicate}, "[skip] (duplicate)", "info"},
-		{downloader.Event{Kind: downloader.KindSkipped, Detail: downloader.SkipUnavailable}, "[skip] (unavailable)", "info"},
-		{downloader.Event{Kind: downloader.KindFailed, Detail: "boom"}, "[error] boom", "err"},
-		{downloader.Event{Kind: downloader.KindStopped}, "[stopped]", "stopped"},
-	}
-	for _, c := range cases {
-		text, kind := formatTrackStatus(c.in)
-		if text != c.text || kind != c.kind {
-			t.Errorf("got (%q,%q) want (%q,%q)", text, kind, c.text, c.kind)
-		}
-	}
-}
-
-func TestDownloadWithoutToken(t *testing.T) {
+func TestSubmitWithoutToken(t *testing.T) {
 	a := &App{}
-	got := a.Download("https://music.yandex.ru/album/1/track/2")
+	got := a.Submit("https://music.yandex.ru/album/1/track/2")
 	if !strings.HasPrefix(got, "[error]") {
 		t.Fatalf("want [error], got %q", got)
 	}
@@ -104,131 +57,71 @@ func TestReadyWithoutTokenMentionsHelp(t *testing.T) {
 	}
 }
 
-func TestDownloadBadLink(t *testing.T) {
-	a := &App{client: downloader.NewClient("")}
-	got := a.Download("not a link")
-	if !strings.HasPrefix(got, "[error]") {
-		t.Fatalf("want [error], got %q", got)
+// Невалидная ссылка не блокирует очередь: строка получает ошибку.
+func TestBadLinkBecomesErrorRow(t *testing.T) {
+	a := newJobApp(t, nil, nil)
+	a.resolveHook = func(_ context.Context, _ string) (queue.Resolved, error) {
+		return queue.Resolved{}, errors.New("ссылка не распознана")
 	}
-}
-
-// --- 4.1: ветвление подтверждения через подмену диалога ---
-
-func TestCheckDuplicateBranching(t *testing.T) {
-	ix := testIndex(t, "Исполнитель A - Песня.flac")
-	var asked []duplicatePrompt
-	a := &App{index: ix, duplicatesEnabled: true, confirmDuplicate: func(p duplicatePrompt) bool {
-		asked = append(asked, p)
-		return false
-	}}
-
-	match := &downloader.Track{Artists: []string{"Исполнитель A"}, Title: "Песня"}
-	if a.checkDuplicate(match) {
-		t.Fatal("declined duplicate must not proceed")
+	a.ensureQueue()
+	if got := a.Submit("badlink"); got != "" {
+		t.Fatalf("submit is accepted and resolved in the queue, got %q", got)
 	}
-	if len(asked) != 1 {
-		t.Fatalf("want exactly one dialog, got %d", len(asked))
-	}
-	p := asked[0]
-	if p.Percent != 100 {
-		t.Errorf("dialog must show the match percent, got %d", p.Percent)
-	}
-	if p.Track != "Исполнитель A — Песня" {
-		t.Errorf("dialog must name the incoming track, got %q", p.Track)
-	}
-	if p.FileName != "Исполнитель A - Песня.flac" {
-		t.Errorf("dialog must name the found file, got %q", p.FileName)
-	}
-	if !strings.HasSuffix(p.FilePath, p.FileName) {
-		t.Errorf("dialog must carry the full path, got %q", p.FilePath)
-	}
-
-	// Подтверждение → скачивание продолжается.
-	a.confirmDuplicate = func(duplicatePrompt) bool { return true }
-	if !a.checkDuplicate(match) {
-		t.Fatal("confirmed duplicate must proceed")
-	}
-
-	// Нет совпадений → диалога нет вообще.
-	asked = nil
-	cold := &downloader.Track{Artists: []string{"Другой"}, Title: "Совсем иное"}
-	if !a.checkDuplicate(cold) {
-		t.Fatal("non-duplicate must proceed")
-	}
-	if len(asked) != 0 {
-		t.Fatalf("no dialog expected, got %d", len(asked))
-	}
-}
-
-// Окно не нативное, поэтому проверяем сам мост: Go ждёт ответа
-// AnswerDuplicate, а не показывает системный MessageBox.
-func TestDuplicatePromptWaitsForFrontendAnswer(t *testing.T) {
-	ix := testIndex(t, "Исполнитель A - Песня.flac")
-	a := &App{index: ix, duplicatesEnabled: true, ctx: context.Background()}
-	var got duplicatePrompt
-	a.eventSink = func(name string, args ...any) {
-		if name != "duplicate-prompt" {
-			t.Fatalf("unexpected event %q", name)
+	waitApp(t, "error row", func() bool { return a.GetQueue().Failed == 1 })
+	for _, task := range a.GetQueue().Tasks {
+		if !strings.Contains(task.Reason, "не распознана") {
+			t.Fatalf("row must carry the reason, got %q", task.Reason)
 		}
-		got = args[0].(duplicatePrompt)
-		a.AnswerDuplicate(false)
 	}
-	if a.checkDuplicate(&downloader.Track{Artists: []string{"Исполнитель A"}, Title: "Песня"}) {
-		t.Fatal("the frontend declined the download, it must not proceed")
-	}
-	if got.FileName != "Исполнитель A - Песня.flac" {
-		t.Fatalf("frontend got no file name: %+v", got)
-	}
-
-	// Повторный ответ без открытого окна ничего не ломает.
-	a.AnswerDuplicate(true)
 }
 
-func TestDuplicatePromptMentionsFormat(t *testing.T) {
+// --- проверка возможного дубля как данные строки, а не диалог ---
+
+func TestDuplicateCandidate(t *testing.T) {
+	ix := testIndex(t, "Исполнитель A - Песня.flac")
+	a := &App{index: ix, duplicatesEnabled: true}
+
+	cand, ok := a.duplicateCandidate(&downloader.Track{Artists: []string{"Исполнитель A"}, Title: "Песня"})
+	if !ok {
+		t.Fatal("expected a probable duplicate")
+	}
+	if cand.Percent != 100 {
+		t.Errorf("candidate must carry the match percent, got %d", cand.Percent)
+	}
+	if cand.FileName != "Исполнитель A - Песня.flac" {
+		t.Errorf("candidate must name the found file, got %q", cand.FileName)
+	}
+	if !strings.HasSuffix(cand.FilePath, cand.FileName) {
+		t.Errorf("candidate must carry the full path, got %q", cand.FilePath)
+	}
+	if cand.DifferentFormat {
+		t.Errorf("flac must not be reported as a different format: %+v", cand)
+	}
+
+	cand, ok = a.duplicateCandidate(&downloader.Track{Artists: []string{"Другой"}, Title: "Совсем иное"})
+	if ok {
+		t.Fatalf("non-duplicate must not be a candidate: %+v", cand)
+	}
+}
+
+func TestDuplicateCandidateDifferentFormat(t *testing.T) {
 	ix := testIndex(t, "Исполнитель A - Песня.mp3")
-	var got duplicatePrompt
-	a := &App{index: ix, duplicatesEnabled: true, confirmDuplicate: func(p duplicatePrompt) bool { got = p; return true }}
-	tr := &downloader.Track{Artists: []string{"Исполнитель A"}, Title: "Песня"}
-	a.checkDuplicate(tr)
-	if !got.DifferentFormat || got.FileExt != "mp3" {
-		t.Fatalf("format mismatch must be called out, got %+v", got)
+	a := &App{index: ix, duplicatesEnabled: true}
+	cand, ok := a.duplicateCandidate(&downloader.Track{Artists: []string{"Исполнитель A"}, Title: "Песня"})
+	if !ok {
+		t.Fatal("expected a candidate")
+	}
+	if !cand.DifferentFormat || cand.FileExt != "mp3" {
+		t.Fatalf("format mismatch must be called out, got %+v", cand)
 	}
 }
 
-// --- 4.2: подтверждение на каждый трек плейлиста ---
-
-func TestFilterDuplicatesPlaylist(t *testing.T) {
-	ix := testIndex(t,
-		"Исполнитель A - Песня 1.flac",
-		"Исполнитель A - Песня 3.flac",
-	)
-	var logs []string
-	// Первый совпавший трек отклоняем, второй подтверждаем.
+func TestNoIndexNoQuestions(t *testing.T) {
 	a := &App{
-		index:             ix,
-		duplicatesEnabled: true,
-		logSink:           func(text, kind string) { logs = append(logs, text) },
-		confirmDuplicate: func(p duplicatePrompt) bool {
-			return !strings.Contains(p.Track, "Песня 1")
-		},
+		logSink: func(text, kind string) { t.Errorf("unexpected log: %s", text) },
 	}
-	tracks := []*downloader.Track{
-		{ID: "1", Artists: []string{"Исполнитель A"}, Title: "Песня 1", Available: true},
-		{ID: "2", Artists: []string{"Другой"}, Title: "Ничего похожего", Available: true},
-		{ID: "3", Artists: []string{"Исполнитель A"}, Title: "Песня 3", Available: true},
-	}
-	kept := a.filterDuplicates(tracks)
-	if len(kept) != 2 || kept[0].ID != "2" || kept[1].ID != "3" {
-		t.Fatalf("want tracks 2 and 3 kept, got %+v", kept)
-	}
-	declined := 0
-	for _, l := range logs {
-		if strings.Contains(l, "(дубль, отменено пользователем)") {
-			declined++
-		}
-	}
-	if declined != 1 {
-		t.Fatalf("want one decline log line, got %d: %v", declined, logs)
+	if _, ok := a.duplicateCandidate(&downloader.Track{ID: "1", Artists: []string{"A"}, Title: "T"}); ok {
+		t.Fatal("without an index nothing is a duplicate")
 	}
 }
 
@@ -261,27 +154,6 @@ func TestOnPublishedAddsDownloadedFile(t *testing.T) {
 	}
 }
 
-// --- 4.3: без LIBRARY_DIR проверки нет вообще ---
-
-func TestNoIndexNoQuestions(t *testing.T) {
-	a := &App{
-		logSink: func(text, kind string) { t.Errorf("unexpected log: %s", text) },
-		confirmDuplicate: func(duplicatePrompt) bool {
-			t.Error("unexpected dialog")
-			return false
-		},
-	}
-	tracks := []*downloader.Track{
-		{ID: "1", Artists: []string{"A"}, Title: "T", Available: true},
-	}
-	if !a.checkDuplicate(tracks[0]) {
-		t.Fatal("without an index every track must proceed")
-	}
-	if kept := a.filterDuplicates(tracks); len(kept) != 1 {
-		t.Fatalf("without an index nothing is filtered, got %d", len(kept))
-	}
-}
-
 func TestSetupLibraryInvalidPath(t *testing.T) {
 	a := &App{outputDir: "./downloads"}
 	a.setupLibrary(filepath.Join(t.TempDir(), ".env"), filepath.Join(t.TempDir(), "missing"))
@@ -297,7 +169,7 @@ func TestSetupLibraryForFlacMonitor(t *testing.T) {
 	downloads := t.TempDir()
 	end := filepath.Join(t.TempDir(), ".env")
 
-	// Empty LIBRARY_DIR + monitor on: index OUTPUT_DIR, no duplicate dialogs.
+	// Empty LIBRARY_DIR + monitor on: index OUTPUT_DIR, no duplicate checks.
 	a := &App{outputDir: downloads, cfg: config.Config{FlacMonitor: true}}
 	a.setupLibrary(end, "")
 	if a.index == nil {
@@ -325,21 +197,18 @@ func TestSetupLibraryForFlacMonitor(t *testing.T) {
 
 // --- 3.2: предупреждение о неполной проверке во время индексации ---
 
-func TestCheckDuplicateWarnsWhileScanning(t *testing.T) {
+func TestDuplicateCandidateWarnsWhileScanning(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "A - Song.flac"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	ix := library.New(filepath.Join(t.TempDir(), "cache.json"), dir)
 
-	var logs []string
+	logs := &logRecorder{}
 	a := &App{
 		index:             ix,
 		duplicatesEnabled: true,
-		logSink:           func(text, kind string) { logs = append(logs, text) },
-		confirmDuplicate: func(duplicatePrompt) bool {
-			return true
-		},
+		logSink:           logs.add,
 	}
 	// Проверка внутри лог-колбэка Refresh: scanning == true ровно там.
 	var checked bool
@@ -348,24 +217,24 @@ func TestCheckDuplicateWarnsWhileScanning(t *testing.T) {
 			return
 		}
 		checked = true
-		a.checkDuplicate(&downloader.Track{Artists: []string{"A"}, Title: "Song"})
+		a.duplicateCandidate(&downloader.Track{Artists: []string{"A"}, Title: "Song"})
 	})
 	if !checked {
 		t.Fatal("test never ran the check during the scan")
 	}
 	var warned bool
-	for _, l := range logs {
+	for _, l := range logs.all() {
 		if strings.Contains(l, "[warn] индексация ещё идёт") && strings.Contains(l, "неполная") {
 			warned = true
 		}
 	}
 	if !warned {
-		t.Fatalf("incomplete check must be reported, got %v", logs)
+		t.Fatalf("incomplete check must be reported, got %v", logs.all())
 	}
 	// После завершения индексации предупреждений больше нет.
-	logs = nil
-	a.checkDuplicate(&downloader.Track{Artists: []string{"A"}, Title: "Song"})
-	for _, l := range logs {
+	before := len(logs.all())
+	a.duplicateCandidate(&downloader.Track{Artists: []string{"A"}, Title: "Song"})
+	for _, l := range logs.all()[before:] {
 		if strings.Contains(l, "[warn]") {
 			t.Fatalf("no warn after the scan, got %q", l)
 		}

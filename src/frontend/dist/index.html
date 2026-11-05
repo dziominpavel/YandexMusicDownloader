@@ -6,7 +6,7 @@
 <title>YandexMusicDownloader</title>
 <link rel="stylesheet" href="app.css">
 </head>
-<body data-state="idle">
+<body data-state="empty">
 <svg class="svg-sprite" aria-hidden="true" focusable="false">
   <symbol id="icon-vinyl" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></symbol>
   <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
@@ -78,80 +78,41 @@
           <span id="dlLabel">Скачать</span>
         </button>
       </div>
-      <p id="composerHint" class="composer-hint">Можно несколько ссылок через пробел или перенос строки. FLAC, если доступен, иначе MP3.</p>
-    </section>
-
-    <section id="preview" class="preview card" hidden aria-live="polite">
-      <div id="previewSkeleton" class="preview-skeleton" hidden>
-        <span class="skeleton skeleton-cover"></span>
-        <span class="skeleton-lines"><span class="skeleton skeleton-line"></span><span class="skeleton skeleton-line short"></span></span>
-      </div>
-      <div id="previewContent" class="preview-content">
-        <span class="cover-wrap">
+      <div id="previewHint" class="preview-hint" hidden>
+        <span class="preview-cover">
           <img id="previewCover" alt="">
           <span id="previewCoverFallback" class="cover-fallback" aria-hidden="true"><svg class="icon"><use href="#icon-vinyl"/></svg></span>
         </span>
-        <div class="preview-text">
-          <span id="previewKind" class="type-pill"></span>
-          <h2 id="previewTitle"></h2>
-          <p id="previewSub"></p>
-        </div>
+        <span class="preview-text">
+          <span class="preview-line"><span id="previewKind" class="type-pill"></span><strong id="previewTitle"></strong></span>
+          <span id="previewSub" class="preview-sub"></span>
+        </span>
       </div>
+      <p id="composerHint" class="composer-hint">Enter — в очередь. Можно несколько ссылок. FLAC, если доступен, иначе MP3.</p>
     </section>
 
-    <section id="jobHead" class="job-head" hidden>
-      <div class="job-head-text">
-        <h2 id="jobTitle"></h2>
-        <p id="jobSubtitle"></p>
+    <section id="queueSection" class="queue card" aria-labelledby="queueTitle" hidden>
+      <div class="queue-head">
+        <h2 id="queueTitle" class="queue-title">Очередь</h2>
+        <div id="qCounts" class="qcounts" aria-live="off"></div>
+        <button id="qStopAll" class="btn btn-ghost btn-sm qaction qaction-stop" type="button" hidden>Остановить всё</button>
+        <button id="qClear" class="btn btn-ghost btn-sm qaction" type="button" hidden>Очистить завершённые</button>
       </div>
+      <div id="qbar" class="qbar" role="progressbar" aria-label="Прогресс очереди" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div id="qfill" class="qfill"></div>
+      </div>
+      <div class="qmeta-row">
+        <span id="qPct" class="qmeta">0%</span>
+        <span id="qWorkers" class="qmeta qmeta-workers"></span>
+        <span id="qBytes" class="qmeta qmeta-bytes"></span>
+      </div>
+      <div id="sources" class="sources" hidden></div>
+      <div id="tasks" class="tasks"></div>
     </section>
 
-    <div id="bgBanner" class="banner banner-info" hidden>
-      <svg class="icon" aria-hidden="true"><use href="#icon-refresh"/></svg>
-      <span id="bgBannerText">Фоновое обновление FLAC</span>
-    </div>
-
-    <div id="errorBanner" class="banner banner-error" role="alert" aria-live="assertive" hidden>
-      <svg class="icon" aria-hidden="true"><use href="#icon-alert"/></svg>
-      <div class="banner-copy"><strong>Не удалось скачать</strong><p id="errorText"></p></div>
-      <div class="banner-actions">
-        <button id="retryBtn" class="btn btn-secondary btn-sm" type="button">Повторить</button>
-        <button id="errorClose" class="btn btn-ghost btn-sm" type="button">Закрыть</button>
-      </div>
-    </div>
-
-    <div id="statusbar" class="statusbar card" hidden>
-      <div class="statusbar-top">
-        <span id="sbcount" class="status-count"></span>
-        <span id="sbbytes" class="status-bytes"></span>
-        <span id="sbpct" class="status-pct">0%</span>
-      </div>
-      <div id="sbfillwrap" class="status-track" role="progressbar" aria-label="Прогресс загрузки" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-        <div id="sbfill" class="status-fill"></div>
-      </div>
-    </div>
-
-    <section id="summary" class="summary card" hidden aria-live="polite">
-      <span class="summary-icon" aria-hidden="true"><svg class="icon"><use id="summaryIconUse" href="#icon-check"/></svg></span>
-      <div class="summary-main">
-        <h2 id="summaryTitle"></h2>
-        <p id="summaryText"></p>
-        <p id="summaryDetails" class="summary-details"></p>
-      </div>
-      <div class="summary-actions">
-        <button id="summaryOpen" class="btn btn-secondary btn-sm" type="button">Открыть папку</button>
-        <button id="summaryAgain" class="btn btn-primary btn-sm" type="button">Скачать ещё</button>
-      </div>
-    </section>
-
-    <section id="tracksSection" class="track-section card" hidden>
-      <div class="section-head"><h2>Треки</h2><span id="trackSummary" class="section-meta"></span></div>
-      <div id="tracks" class="track-list"></div>
-    </section>
-
-    <details id="details" class="details card">
+    <details id="journal" class="details card">
       <summary class="details-summary">
-        <span>Подробности</span>
+        <span>Журнал</span>
         <span id="logBadge" class="badge badge-danger" hidden>0</span>
         <svg class="icon chevron" aria-hidden="true"><use href="#icon-chevron"/></svg>
       </summary>
@@ -164,6 +125,8 @@
     <span id="progressAnnounce" class="sr-only" aria-live="polite"></span>
   </main>
 </div>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
 <div id="dropOverlay" class="drop-overlay" hidden>
   <div class="drop-card"><svg class="icon" aria-hidden="true"><use href="#icon-download"/></svg><strong>Отпустите, чтобы вставить ссылку</strong></div>
@@ -217,7 +180,7 @@
         <h3>Производительность</h3>
         <div class="field">
           <label for="sWorkers">Параллельных скачиваний (1..10)</label>
-          <p class="help">Сколько треков качать одновременно. 3 — оптимально.</p>
+          <p class="help">Сколько треков качать одновременно на всю очередь. 3 — оптимально.</p>
           <div class="stepper">
             <button type="button" id="sMinus" class="btn btn-secondary" title="Меньше" aria-label="Меньше">−</button>
             <input type="text" inputmode="numeric" id="sWorkers" value="3">
@@ -268,6 +231,7 @@
       </section>
     </div>
     <footer class="modal-footer">
+      <p id="settingsNote" class="settings-note">Изменения применятся к новым задачам; текущие загрузки не прерываются.</p>
       <div id="settingsError" class="form-error" role="alert" aria-live="assertive"></div>
       <div class="footer-actions">
         <button id="sCancel" class="btn btn-ghost" type="button">Отмена</button>
@@ -292,19 +256,6 @@
       <p class="help warn">Токен действует как пароль. Никому его не передавайте, не публикуйте и не показывайте скриншоты адресной строки с токеном.</p>
     </div>
     <footer class="modal-footer"><div class="footer-actions"><button type="button" id="tokenHelpOAuth" class="btn btn-secondary">Открыть страницу OAuth</button><button type="button" id="tokenHelpCloseFooter" class="btn btn-primary">Понятно</button></div></footer>
-  </div>
-</div>
-
-<div id="dupOverlay" class="overlay" aria-hidden="true">
-  <div id="dupCard" class="modal modal-dup" role="dialog" aria-modal="true" aria-labelledby="dupTitle" tabindex="-1">
-    <header class="modal-head"><h2 id="dupTitle">Возможен дубль — <span id="dupPercent"></span></h2></header>
-    <div class="modal-body">
-      <p class="help">Похожий файл уже есть в коллекции. Проверьте, тот ли это трек.</p>
-      <div class="dup-block"><span class="dup-label">Сейчас скачивается</span><div class="dup-name" id="dupTrack"></div></div>
-      <div class="dup-block"><span class="dup-label">Похожий файл в коллекции</span><div class="dup-name" id="dupMatchName"></div><div class="dup-path" id="dupMatchPath"></div></div>
-      <p class="help warn" id="dupFormat" hidden></p>
-    </div>
-    <footer class="modal-footer"><div class="footer-actions"><button type="button" id="dupNo" class="btn btn-secondary">Отмена</button><button type="button" id="dupYes" class="btn btn-danger">Скачать всё равно</button></div></footer>
   </div>
 </div>
 

@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -32,6 +33,11 @@ type lyricsInfo struct {
 // downloads the payload. An absent lyrics entry is a normal error the
 // callers ignore.
 func (c *Client) fetchLyricsText(trackID, format string) (string, error) {
+	return c.fetchLyricsTextCtx(c.reqCtx(), trackID, format)
+}
+
+// fetchLyricsTextCtx is fetchLyricsText for one task context.
+func (c *Client) fetchLyricsTextCtx(ctx context.Context, trackID, format string) (string, error) {
 	ts := time.Now().Unix()
 	mac := hmac.New(sha256.New, []byte(lyricsSignKey))
 	fmt.Fprintf(mac, "%s%d", trackID, ts)
@@ -40,14 +46,14 @@ func (c *Client) fetchLyricsText(trackID, format string) (string, error) {
 	u := fmt.Sprintf("%s/tracks/%s/lyrics?format=%s&timeStamp=%d&sign=%s",
 		apiBase, url.PathEscape(trackID), format, ts, url.QueryEscape(sign))
 	var data lyricsInfo
-	if err := c.get(u, &data); err != nil {
+	if err := c.getCtx(ctx, u, &data); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(data.Result.DownloadURL) == "" {
 		return "", fmt.Errorf("downloader: lyrics: empty download url")
 	}
 
-	req, err := http.NewRequestWithContext(c.reqCtx(), http.MethodGet, data.Result.DownloadURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, data.Result.DownloadURL, nil)
 	if err != nil {
 		return "", err
 	}
@@ -85,13 +91,18 @@ func lrcToText(lrc string) string {
 // prepareLyrics loads song text once per track. Errors are silent: a
 // missing lyrics entry must never fail a download.
 func (c *Client) prepareLyrics(t *Track) {
+	c.prepareLyricsCtx(c.reqCtx(), t)
+}
+
+// prepareLyricsCtx is prepareLyrics for one task context.
+func (c *Client) prepareLyricsCtx(ctx context.Context, t *Track) {
 	if t == nil || t.lyricsLoaded || (!c.EmbedLyrics && !c.SaveLRC) {
 		return
 	}
 	t.lyricsLoaded = true
 
 	if c.SaveLRC {
-		if lrc, err := c.fetchLyricsText(t.ID, "LRC"); err == nil {
+		if lrc, err := c.fetchLyricsTextCtx(ctx, t.ID, "LRC"); err == nil {
 			t.LyricsLRC = lrc
 			if c.EmbedLyrics {
 				if text := lrcToText(lrc); text != "" {
@@ -103,7 +114,7 @@ func (c *Client) prepareLyrics(t *Track) {
 		}
 	}
 	if c.EmbedLyrics {
-		if text, err := c.fetchLyricsText(t.ID, "TEXT"); err == nil {
+		if text, err := c.fetchLyricsTextCtx(ctx, t.ID, "TEXT"); err == nil {
 			t.Lyrics = text
 		}
 	}
@@ -111,7 +122,12 @@ func (c *Client) prepareLyrics(t *Track) {
 
 // prepareAndTag loads lyrics (when enabled) and applies the tag hook.
 func (c *Client) prepareAndTag(path string, track *Track) error {
-	c.prepareLyrics(track)
+	return c.prepareAndTagCtx(c.reqCtx(), path, track)
+}
+
+// prepareAndTagCtx is prepareAndTag for one task context.
+func (c *Client) prepareAndTagCtx(ctx context.Context, path string, track *Track) error {
+	c.prepareLyricsCtx(ctx, track)
 	return c.runTagHook(path, track)
 }
 

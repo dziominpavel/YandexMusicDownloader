@@ -61,7 +61,13 @@ func (c *Client) AccountState(ctx context.Context) (int64, bool, error) {
 
 // accountUID is the short form used by the download pipeline.
 func (c *Client) accountUID() (int64, error) {
-	uid, _, err := c.AccountState(c.reqCtx())
+	return c.accountUIDCtx(c.reqCtx())
+}
+
+// accountUIDCtx is accountUID for one task context: a cancelled task must
+// not inherit the whole job's cancellation state.
+func (c *Client) accountUIDCtx(ctx context.Context) (int64, error) {
+	uid, _, err := c.AccountState(ctx)
 	return uid, err
 }
 

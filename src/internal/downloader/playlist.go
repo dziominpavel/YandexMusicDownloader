@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"fmt"
 )
 
@@ -94,11 +95,16 @@ func mapPlaylist(data playlistResult) *Playlist {
 // via GET /playlist/{uuid}. Tracks come embedded in the answer, so no
 // per-track requests are needed.
 func (c *Client) Playlist(uuid string) (*Playlist, error) {
+	return c.PlaylistCtx(c.reqCtx(), uuid)
+}
+
+// PlaylistCtx is Playlist for one task context.
+func (c *Client) PlaylistCtx(ctx context.Context, uuid string) (*Playlist, error) {
 	if uuid == "" {
 		return nil, fmt.Errorf("downloader: empty playlist uuid")
 	}
 	var data playlistResult
-	if err := c.get(apiBase+"/playlist/"+uuid, &data); err != nil {
+	if err := c.getCtx(ctx, apiBase+"/playlist/"+uuid, &data); err != nil {
 		return nil, err
 	}
 	p := mapPlaylist(data)
@@ -141,11 +147,16 @@ type albumWithTracksResult struct {
 // tracks in order (flattening volumes). Mapped into *Playlist for reuse of
 // existing playlist download pipeline.
 func (c *Client) Album(id string) (*Playlist, error) {
+	return c.AlbumCtx(c.reqCtx(), id)
+}
+
+// AlbumCtx is Album for one task context.
+func (c *Client) AlbumCtx(ctx context.Context, id string) (*Playlist, error) {
 	if id == "" {
 		return nil, fmt.Errorf("downloader: empty album id")
 	}
 	var data albumWithTracksResult
-	if err := c.get(apiBase+"/albums/"+id+"/with-tracks", &data); err != nil {
+	if err := c.getCtx(ctx, apiBase+"/albums/"+id+"/with-tracks", &data); err != nil {
 		return nil, err
 	}
 	p := &Playlist{Title: data.Result.Title, TrackCount: data.Result.TrackCount}

@@ -109,6 +109,9 @@ type Client struct {
 	SubdirTemplate string
 	// fetchTrack resolves metadata; override in tests to avoid network.
 	fetchTrack func(string) (*Track, error)
+	// fetchTrackCtx is the context-aware resolver used by the queue
+	// (see DownloadTrackCtx). Tests override it the same way.
+	fetchTrackCtx func(context.Context, string) (*Track, error)
 	// downloadOne runs the per-track pipeline; override in tests.
 	// Nil means DownloadTrack.
 	downloadOne func(*Track, string, func(Event), ProgressFunc) (Result, error)
@@ -138,6 +141,7 @@ func NewClient(token string) *Client {
 		PlaylistWorkers: defaultPlaylistWorkers,
 	}
 	c.fetchTrack = c.TrackInfo
+	c.fetchTrackCtx = c.TrackInfoCtx
 	return c
 }
 
@@ -146,6 +150,15 @@ func NewClient(token string) *Client {
 // the duplicate check before any download starts.
 func (c *Client) ResolveTrack(id string) (*Track, error) {
 	return c.fetchTrack(id)
+}
+
+// ResolveTrackCtx is ResolveTrack with a per-task context: cancelling it
+// aborts the metadata request without touching other tasks.
+func (c *Client) ResolveTrackCtx(ctx context.Context, id string) (*Track, error) {
+	if c.fetchTrackCtx != nil {
+		return c.fetchTrackCtx(ctx, id)
+	}
+	return c.TrackInfoCtx(ctx, id)
 }
 
 // runTagHook applies the tag hook (no-op when unset).
@@ -208,9 +221,18 @@ func isRetryableNetworkErr(err error) bool {
 }
 
 func (c *Client) get(url string, out any) error {
+	return c.getCtx(c.reqCtx(), url, out)
+}
+
+// getCtx is get with an explicit context. Cancelling ctx (a task cancel
+// or a stopped queue) breaks the request and the retry sleeps.
+func (c *Client) getCtx(ctx context.Context, url string, out any) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		req, err := c.newRequest(http.MethodGet, url)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		req, err := c.newRequestWithContext(ctx, http.MethodGet, url)
 		if err != nil {
 			return err
 		}
@@ -218,7 +240,9 @@ func (c *Client) get(url string, out any) error {
 		if err != nil {
 			lastErr = err
 			if isRetryableNetworkErr(err) && attempt < 2 {
-				time.Sleep(time.Duration(attempt+1) * 150 * time.Millisecond)
+				if !sleepCtx(ctx, retryDelay(attempt)) {
+					return ctx.Err()
+				}
 				continue
 			}
 			return fmt.Errorf("downloader: GET %s: %w", url, err)
@@ -231,7 +255,9 @@ func (c *Client) get(url string, out any) error {
 			}
 			lastErr = fmt.Errorf("downloader: GET %s: http %d", url, resp.StatusCode)
 			if attempt < 2 {
-				time.Sleep(time.Duration(attempt+1) * 150 * time.Millisecond)
+				if !sleepCtx(ctx, retryDelay(attempt)) {
+					return ctx.Err()
+				}
 				continue
 			}
 			return lastErr
@@ -241,7 +267,9 @@ func (c *Client) get(url string, out any) error {
 		if err != nil {
 			lastErr = err
 			if isRetryableNetworkErr(err) && attempt < 2 {
-				time.Sleep(time.Duration(attempt+1) * 150 * time.Millisecond)
+				if !sleepCtx(ctx, retryDelay(attempt)) {
+					return ctx.Err()
+				}
 				continue
 			}
 			return fmt.Errorf("downloader: decode %s: %w", url, err)
@@ -277,8 +305,13 @@ type trackResult struct {
 
 // TrackInfo fetches metadata for a track ID.
 func (c *Client) TrackInfo(id string) (*Track, error) {
+	return c.TrackInfoCtx(c.reqCtx(), id)
+}
+
+// TrackInfoCtx is TrackInfo with an explicit request context.
+func (c *Client) TrackInfoCtx(ctx context.Context, id string) (*Track, error) {
 	var data trackResult
-	if err := c.get(apiBase+"/tracks/"+id, &data); err != nil {
+	if err := c.getCtx(ctx, apiBase+"/tracks/"+id, &data); err != nil {
 		return nil, err
 	}
 	if len(data.Result) == 0 {

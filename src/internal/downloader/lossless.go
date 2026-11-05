@@ -162,7 +162,12 @@ func losslessExt(codec string) string {
 
 // losslessFileInfo fetches and validates the lossless source for a track.
 func (c *Client) losslessFileInfo(trackID string, uid int64) (losslessInfo, error) {
-	req, err := c.newRequest(http.MethodGet, fileInfoURLAt(c.baseURL(), trackID, time.Now().Unix()))
+	return c.losslessFileInfoCtx(c.reqCtx(), trackID, uid)
+}
+
+// losslessFileInfoCtx is losslessFileInfo with an explicit context.
+func (c *Client) losslessFileInfoCtx(ctx context.Context, trackID string, uid int64) (losslessInfo, error) {
+	req, err := c.newRequestWithContext(ctx, http.MethodGet, fileInfoURLAt(c.baseURL(), trackID, time.Now().Unix()))
 	if err != nil {
 		return losslessInfo{}, err
 	}
@@ -228,9 +233,19 @@ func (c *Client) DownloadWithProgress(trackID, outputDir string, emit func(Event
 // The playlist batch uses it to avoid an extra metadata request per track.
 // A stopped job returns ErrStopped and emits KindStopped instead of an error.
 func (c *Client) DownloadTrack(track *Track, outputDir string, emit func(Event), onProgress ProgressFunc) (res Result, err error) {
+	return c.DownloadTrackCtx(c.reqCtx(), track, outputDir, emit, onProgress)
+}
+
+// DownloadTrackCtx is DownloadTrack for one task context: cancelling ctx
+// stops only this task (the queue owns one context per task), while a
+// cancelled job context still stops the legacy whole-pool path.
+func (c *Client) DownloadTrackCtx(ctx context.Context, track *Track, outputDir string, emit func(Event), onProgress ProgressFunc) (res Result, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	label := track.Label()
 	tid := track.ID
-	if c.Stopped() {
+	if ctx.Err() != nil {
 		emitEvent(emit, Event{Kind: KindStopped, Label: label, TrackID: tid})
 		return Result{}, ErrStopped
 	}
@@ -245,7 +260,7 @@ func (c *Client) DownloadTrack(track *Track, outputDir string, emit func(Event),
 			emitEvent(emit, Event{Kind: KindDone, Label: label, TrackID: tid, Format: res.Format, Fallback: res.Fallback, FallbackReason: res.FallbackReason, Converted: res.Converted, Path: res.Path})
 		case errors.Is(err, ErrAlreadyExists):
 			emitEvent(emit, Event{Kind: KindSkipped, Label: label, TrackID: tid, Detail: res.Path})
-		case errors.Is(err, ErrStopped) || c.Stopped():
+		case errors.Is(err, ErrStopped) || ctx.Err() != nil:
 			err = ErrStopped
 			emitEvent(emit, Event{Kind: KindStopped, Label: label, TrackID: tid})
 		default:
@@ -254,20 +269,20 @@ func (c *Client) DownloadTrack(track *Track, outputDir string, emit func(Event),
 	}()
 
 	var fallbackReason string
-	if uid, uerr := c.accountUID(); uerr != nil {
+	if uid, uerr := c.accountUIDCtx(ctx); uerr != nil {
 		fallbackReason = "не удалось проверить аккаунт: " + uerr.Error()
-	} else if res, lerr := c.downloadLossless(track, outputDir, uid, onProgress); lerr == nil || errors.Is(lerr, ErrAlreadyExists) {
+	} else if res, lerr := c.downloadLosslessCtx(ctx, track, outputDir, uid, onProgress); lerr == nil || errors.Is(lerr, ErrAlreadyExists) {
 		return res, lerr
 	} else {
 		// Any other lossless failure falls back to MP3 below. Keep the
 		// reason: without it the log looks like a silent quality downgrade.
 		fallbackReason = losslessFallbackReason(lerr)
 	}
-	if c.Stopped() {
+	if ctx.Err() != nil {
 		return Result{}, ErrStopped
 	}
 
-	path, err := c.downloadMP3Track(track, outputDir, nil, onProgress) // events emitted by outer defer
+	path, err := c.downloadMP3TrackCtx(ctx, track, outputDir, nil, onProgress) // events emitted by outer defer
 	if err != nil {
 		if errors.Is(err, ErrAlreadyExists) {
 			return Result{Path: path, Format: "MP3", Fallback: true, FallbackReason: fallbackReason}, err
@@ -313,7 +328,12 @@ func upgradeTarget(codec string, convertM4A, ffmpegAvailable bool) (ext, format,
 // downloadLossless streams, decrypts, tags and publishes a lossless file
 // into the normal output layout.
 func (c *Client) downloadLossless(track *Track, outputDir string, uid int64, onProgress ProgressFunc) (Result, error) {
-	info, err := c.losslessFileInfo(track.ID, uid)
+	return c.downloadLosslessCtx(c.reqCtx(), track, outputDir, uid, onProgress)
+}
+
+// downloadLosslessCtx is downloadLossless with an explicit context.
+func (c *Client) downloadLosslessCtx(ctx context.Context, track *Track, outputDir string, uid int64, onProgress ProgressFunc) (Result, error) {
+	info, err := c.losslessFileInfoCtx(ctx, track.ID, uid)
 	if err != nil {
 		return Result{}, err
 	}
@@ -326,7 +346,7 @@ func (c *Client) downloadLossless(track *Track, outputDir string, uid int64, onP
 	if _, err := os.Stat(dest); err == nil {
 		return Result{Path: dest, Format: format}, fmt.Errorf("%w: %s", ErrAlreadyExists, dest)
 	}
-	return c.downloadLosslessTo(track, info, dest, format, streamFormat, ffmpeg, onProgress)
+	return c.downloadLosslessToCtx(ctx, track, info, dest, format, streamFormat, ffmpeg, onProgress)
 }
 
 // Upgrade downloads lossless into destDir using the normal download
@@ -343,7 +363,7 @@ func (c *Client) Upgrade(ctx context.Context, track *Track, oldPath, destDir str
 	if err != nil {
 		return Result{}, err
 	}
-	info, err := c.losslessFileInfo(track.ID, uid)
+	info, err := c.losslessFileInfoCtx(ctx, track.ID, uid)
 	if err != nil {
 		return Result{}, err
 	}
@@ -362,12 +382,17 @@ func (c *Client) Upgrade(ctx context.Context, track *Track, oldPath, destDir str
 		}
 		return Result{Path: dest, Format: format}, fmt.Errorf("%w: %s", ErrDestConflict, dest)
 	}
-	return c.downloadLosslessTo(track, info, dest, format, streamFormat, ffmpeg, onProgress)
+	return c.downloadLosslessToCtx(ctx, track, info, dest, format, streamFormat, ffmpeg, onProgress)
 }
 
 // downloadLosslessTo runs the shared stream → convert → tag → publish
 // pipeline for a known lossless source and an explicit destination.
 func (c *Client) downloadLosslessTo(track *Track, info losslessInfo, dest, format, streamFormat, ffmpeg string, onProgress ProgressFunc) (Result, error) {
+	return c.downloadLosslessToCtx(c.reqCtx(), track, info, dest, format, streamFormat, ffmpeg, onProgress)
+}
+
+// downloadLosslessToCtx is downloadLosslessTo with an explicit context.
+func (c *Client) downloadLosslessToCtx(ctx context.Context, track *Track, info losslessInfo, dest, format, streamFormat, ffmpeg string, onProgress ProgressFunc) (Result, error) {
 	dir := filepath.Dir(dest)
 	var stream cipher.Stream
 	if strings.TrimSpace(info.Key) != "" {
@@ -384,12 +409,12 @@ func (c *Client) downloadLosslessTo(track *Track, info losslessInfo, dest, forma
 
 	var lastErr error
 	for _, rawURL := range info.URLs {
-		if c.Stopped() {
+		if ctx.Err() != nil {
 			return Result{}, ErrStopped
 		}
-		tmp, err := c.streamLosslessTemp(rawURL, dir, stream, streamFormat, losslessExt(info.Codec), track.ID, track.Label(), onProgress)
+		tmp, err := c.streamLosslessTempCtx(ctx, rawURL, dir, stream, streamFormat, losslessExt(info.Codec), track.ID, track.Label(), onProgress)
 		if err != nil {
-			if c.Stopped() {
+			if ctx.Err() != nil {
 				return Result{}, ErrStopped
 			}
 			lastErr = err
@@ -406,7 +431,7 @@ func (c *Client) downloadLosslessTo(track *Track, info losslessInfo, dest, forma
 			tmp = flacTmp
 			converted = true
 		}
-		if err := c.prepareAndTag(tmp, track); err != nil {
+		if err := c.prepareAndTagCtx(ctx, tmp, track); err != nil {
 			os.Remove(tmp)
 			lastErr = err
 			continue
@@ -429,6 +454,11 @@ func (c *Client) downloadLosslessTo(track *Track, info losslessInfo, dest, forma
 // decrypt and flac magic check. Returns the temp path.
 // Network bytes are reported via onProgress (nil = silent).
 func (c *Client) streamLosslessTemp(rawURL, dir string, stream cipher.Stream, format, ext, trackID, label string, onProgress ProgressFunc) (string, error) {
+	return c.streamLosslessTempCtx(c.reqCtx(), rawURL, dir, stream, format, ext, trackID, label, onProgress)
+}
+
+// streamLosslessTempCtx is streamLosslessTemp with an explicit context.
+func (c *Client) streamLosslessTempCtx(ctx context.Context, rawURL, dir string, stream cipher.Stream, format, ext, trackID, label string, onProgress ProgressFunc) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
@@ -438,7 +468,7 @@ func (c *Client) streamLosslessTemp(rawURL, dir string, stream cipher.Stream, fo
 	}
 	tmpName := tmp.Name()
 
-	req, err := c.newRequest(http.MethodGet, rawURL)
+	req, err := c.newRequestWithContext(ctx, http.MethodGet, rawURL)
 	if err != nil {
 		tmp.Close()
 		os.Remove(tmpName)

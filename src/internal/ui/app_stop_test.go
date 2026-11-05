@@ -1,135 +1,118 @@
 package ui
 
 import (
-	"strings"
+	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 
 	"yamdl/internal/downloader"
+	"yamdl/internal/queue"
 )
 
-// Остановленный одиночный трек: лог и строка — [stopped] вместо [error],
-// job-end уходит с флагом остановки (статусбар не доводится до 100%).
-func TestDownloadSingleStopped(t *testing.T) {
-	var rec eventRecorder
-	var logs []string
-	tr := &downloader.Track{ID: "9", Artists: []string{"A"}, Title: "Solo", Available: true}
-	a := &App{
-		client:    downloader.NewClient(""),
-		eventSink: rec.sink,
-		logSink:   func(text, kind string) { logs = append(logs, text) },
-		downloadOne: func(got *downloader.Track, _ string, emit func(downloader.Event), _ downloader.ProgressFunc) error {
-			emit(downloader.Event{Kind: downloader.KindDownloading, Label: got.Label(), TrackID: got.ID})
-			emit(downloader.Event{Kind: downloader.KindStopped, Label: got.Label(), TrackID: got.ID})
-			return downloader.ErrStopped
-		},
-	}
-	if got := a.downloadSingle(tr); got != "" {
-		t.Fatalf("stopped outcome must be shown by events, got %q", got)
-	}
-	iEnd := rec.find("job-end")
-	if iEnd < 0 {
-		t.Fatalf("job-end missing: %v", rec.names)
-	}
-	args := rec.arg(iEnd)
-	if len(args) != 4 {
-		t.Fatalf("job-end args = %v, want 4 values", args)
-	}
-	if args[0] != 0 || args[1] != 0 || args[2] != 0 {
-		t.Errorf("job-end outcome = %v, want all zeroes", args)
-	}
-	if args[3] != true {
-		t.Errorf("job-end stopped flag = %v, want true", args[3])
-	}
-	// Строка трека: последний статус — [stopped], не [error].
-	statuses := rec.all("track-status")
-	if len(statuses) == 0 {
-		t.Fatalf("track-status missing: %v", rec.names)
-	}
-	last := statuses[len(statuses)-1]
-	if rec.arg(last)[1] != "[stopped]" || rec.arg(last)[2] != "stopped" {
-		t.Errorf("last track-status = %v, want [stopped]/stopped", rec.arg(last))
-	}
-	var sawStoppedLog bool
-	for _, l := range logs {
-		if l == "[stopped] A — Solo" {
-			sawStoppedLog = true
+func TestCancelAllStopsQueue(t *testing.T) {
+	logs := &logRecorder{}
+	a := newJobApp(t, nil, logs)
+	a.cfg.Workers = 1
+	a.resolveHook = func(_ context.Context, link string) (queue.Resolved, error) {
+		if link == "many" {
+			return queue.Resolved{Label: "Альбом · Many", Kind: "album", Tracks: []*downloader.Track{trk("1", "T1"), trk("2", "T2"), trk("3", "T3")}}, nil
 		}
-		if strings.HasPrefix(l, "[error]") {
-			t.Errorf("a stop must not be logged as an error: %q", l)
+		return queue.Resolved{Label: "Трек · New", Kind: "track", Tracks: []*downloader.Track{trk("4", "T4")}}, nil
+	}
+	gate := make(chan struct{})
+	a.downloadHook = func(ctx context.Context, _ *downloader.Track, _ any, _ func(int64, int64)) (queue.Result, error) {
+		select {
+		case <-gate:
+			return queue.Result{Format: "FLAC"}, nil
+		case <-ctx.Done():
+			return queue.Result{}, ctx.Err()
 		}
 	}
-	if !sawStoppedLog {
-		t.Errorf("log must show [stopped] A — Solo, got %v", logs)
+	a.ensureQueue()
+	a.Submit("many")
+	waitApp(t, "one active and two waiting", func() bool {
+		s := a.GetQueue()
+		return s.Active == 1 && s.Waiting == 2
+	})
+	a.CancelAll()
+	waitApp(t, "everything canceled", func() bool {
+		s := a.GetQueue()
+		return s.Canceled == 3 && s.Active == 0
+	})
+	if !logs.has("[stopped]") {
+		t.Fatalf("a stop must be logged as [stopped]: %v", logs.all())
 	}
+	// Новая постановка после остановки работает: очередь не «залипает».
+	if got := a.Submit("new"); got != "" {
+		t.Fatalf("submit after cancel must be accepted, got %q", got)
+	}
+	waitApp(t, "new task starts", func() bool {
+		s := a.GetQueue()
+		return s.Active == 1
+	})
+	close(gate)
+	waitApp(t, "new task done", func() bool { return a.GetQueue().Done == 1 })
 }
 
-// Стоп биндинга поднимает флаг клиента; новая job'а его сбрасывает.
-func TestStopFlagResetOnNewJob(t *testing.T) {
-	var rec eventRecorder
-	a := &App{
-		client:    downloader.NewClient(""),
-		eventSink: rec.sink,
-		logSink:   func(text, kind string) {},
+func TestCancelOneTaskKeepsNeighbour(t *testing.T) {
+	a := newJobApp(t, nil, nil)
+	a.cfg.Workers = 2
+	a.resolveHook = func(_ context.Context, _ string) (queue.Resolved, error) {
+		return queue.Resolved{Label: "Альбом · Two", Kind: "album", Tracks: []*downloader.Track{trk("1", "T1"), trk("2", "T2")}}, nil
 	}
-	a.downloadOne = func(*downloader.Track, string, func(downloader.Event), downloader.ProgressFunc) error {
-		return nil
+	gate := make(chan struct{})
+	a.downloadHook = func(ctx context.Context, _ *downloader.Track, _ any, _ func(int64, int64)) (queue.Result, error) {
+		select {
+		case <-gate:
+			return queue.Result{Format: "FLAC"}, nil
+		case <-ctx.Done():
+			return queue.Result{}, ctx.Err()
+		}
 	}
-	a.Stop()
-	if !a.stopRequested() {
-		t.Fatal("Stop must set the client stop flag")
+	a.ensureQueue()
+	a.Submit("two")
+	waitApp(t, "both active", func() bool { return a.GetQueue().Active == 2 })
+
+	var key string
+	for _, task := range a.GetQueue().Tasks {
+		if task.TrackID == "1" {
+			key = task.Key
+		}
 	}
-	// Плохая ссылка: job'а не стартует, но флаг уже должен быть сброшен
-	// — иначе следующее скачивание не начнётся.
-	if got := a.Download("not a link"); !strings.HasPrefix(got, "[error]") {
-		t.Fatalf("want [error], got %q", got)
-	}
-	if a.stopRequested() {
-		t.Fatal("a new Download must reset the previous stop")
-	}
+	a.CancelTask(key)
+	waitApp(t, "one canceled, one active", func() bool {
+		s := a.GetQueue()
+		return s.Canceled == 1 && s.Active == 1
+	})
+	close(gate)
+	waitApp(t, "neighbour done", func() bool { return a.GetQueue().Done == 1 })
 }
 
-// Плейлист, остановленный на середине: [stopped]-итог вместо [finished].
-func TestDownloadPlaylistStopped(t *testing.T) {
-	var rec eventRecorder
-	var logs []string
-	a := &App{
-		client:    downloader.NewClient(""),
-		eventSink: rec.sink,
-		logSink:   func(text, kind string) { logs = append(logs, text) },
-		fetchPlaylist: func(string) (*downloader.Playlist, error) {
-			return &downloader.Playlist{
-				Title: "Микс",
-				Tracks: []*downloader.Track{
-					{ID: "1", Artists: []string{"A"}, Title: "T1", Available: true},
-					{ID: "2", Artists: []string{"A"}, Title: "T2", Available: true},
-				},
-			}, nil
-		},
-		downloadBatch: func(tracks []*downloader.Track, _ string, emit func(downloader.Event), _ downloader.ProgressFunc) downloader.Summary {
-			emit(downloader.Event{Kind: downloader.KindStopped, Label: tracks[0].Label(), TrackID: tracks[0].ID})
-			return downloader.Summary{Stopped: 2}
-		},
+func TestRetryFailedTask(t *testing.T) {
+	a := newJobApp(t, nil, nil)
+	a.cfg.Workers = 1
+	a.resolveHook = func(_ context.Context, _ string) (queue.Resolved, error) {
+		return queue.Resolved{Label: "Трек · Bad", Kind: "track", Tracks: []*downloader.Track{trk("bad", "Bad")}}, nil
 	}
-	if got := a.Download("https://music.yandex.ru/playlists/11111111-2222-3333-4444-555555555555"); got != "" {
-		t.Fatalf("stopped outcome must be in the log, got %q", got)
-	}
-	iEnd := rec.find("job-end")
-	if iEnd < 0 {
-		t.Fatalf("job-end missing: %v", rec.names)
-	}
-	if rec.arg(iEnd)[3] != true {
-		t.Errorf("job-end stopped flag = %v, want true", rec.arg(iEnd))
-	}
-	var summary string
-	for _, l := range logs {
-		if strings.HasPrefix(l, "[finished]") {
-			t.Errorf("a stopped job must not log [finished]: %q", l)
+	var attempts atomic.Int32
+	a.downloadHook = func(_ context.Context, _ *downloader.Track, _ any, _ func(int64, int64)) (queue.Result, error) {
+		if attempts.Load() == 0 {
+			attempts.Add(1)
+			return queue.Result{}, errors.New("сеть упала")
 		}
-		if strings.HasPrefix(l, "[stopped] прервано:") {
-			summary = l
-		}
+		return queue.Result{Format: "MP3"}, nil
 	}
-	if summary == "" {
-		t.Errorf("want a [stopped] summary line, got %v", logs)
+	a.ensureQueue()
+	a.Submit("bad")
+	waitApp(t, "error", func() bool { return a.GetQueue().Failed == 1 })
+	var key string
+	for _, task := range a.GetQueue().Tasks {
+		key = task.Key
 	}
+	a.RetryTask(key)
+	waitApp(t, "retry succeeds", func() bool {
+		s := a.GetQueue()
+		return s.Done == 1 && s.Failed == 0
+	})
 }

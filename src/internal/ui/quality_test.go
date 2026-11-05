@@ -261,21 +261,15 @@ func TestMaybeAutoCheckRunsWhenDue(t *testing.T) {
 	}
 }
 
-func TestMaybeAutoCheckSkipsBusyAndNotDue(t *testing.T) {
+func TestMaybeAutoCheckWaitsForInterval(t *testing.T) {
 	dir := t.TempDir()
 	ix := qualityIndex(t, dir, "1")
 	j := quality.NewJournal("")
 	a := &App{
-		busy: true, index: ix, qualityJournal: j,
+		index: ix, qualityJournal: j,
 		client: downloader.NewClient(""),
 		cfg:    config.Config{FlacMonitor: true},
 	}
-	a.maybeAutoCheck()
-	if a.isChecking() {
-		t.Fatal("busy app must not start an auto-check")
-	}
-
-	a.busy = false
 	j.Finish(timeNow(), 0, nil) // next check in 7 days
 	a.maybeAutoCheck()
 	if a.isChecking() {
@@ -353,12 +347,12 @@ func TestDownloadFoundArchivesExistingFlac(t *testing.T) {
 		client: downloader.NewClient(""), index: ix, qualityJournal: j,
 		outputDir: dir, found: []quality.FoundItem{item},
 	}
-	var events []string
-	var finishedText string
+	var status textBox
 	a.eventSink = func(name string, args ...any) {
-		events = append(events, name)
 		if name == "quality-check-finished" && len(args) > 0 {
-			finishedText, _ = args[0].(string)
+			if text, ok := args[0].(string); ok {
+				status.set(text)
+			}
 		}
 	}
 	a.logSink = func(string, string) {}
@@ -366,27 +360,53 @@ func TestDownloadFoundArchivesExistingFlac(t *testing.T) {
 	if err := a.DownloadFound([]quality.FoundItem{item}); err != nil {
 		t.Fatal(err)
 	}
-	if a.isBusy() {
-		t.Fatal("busy must be cleared after the job")
-	}
-	found := false
-	for _, e := range events {
-		if e == "job-start" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("job-start event missing: %v", events)
-	}
+	waitUpgradeQueue(t, a)
 	if _, err := os.Stat(filepath.Join(dir, "_old", "Artist - Song.mp3")); err != nil {
 		t.Fatalf("old MP3 must be archived: %v", err)
 	}
 	if len(a.PendingFound()) != 0 {
 		t.Fatalf("nothing must remain pending: %+v", a.PendingFound())
 	}
-	if strings.Contains(finishedText, "идёт") || finishedText == "" {
-		t.Fatalf("finished event must carry the final status, got %q", finishedText)
+	if text := status.get(); text == "" || strings.Contains(text, "идёт") {
+		t.Fatalf("finished event must carry the final status, got %q", text)
 	}
+}
+
+// textBox is a thread-safe last-event holder for the queue goroutines.
+type textBox struct {
+	mu sync.Mutex
+	s  string
+}
+
+func (b *textBox) set(s string) {
+	b.mu.Lock()
+	b.s = s
+	b.mu.Unlock()
+}
+
+func (b *textBox) get() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.s
+}
+
+// waitUpgradeQueue waits until every upgrade task is terminal and the
+// offer list is drained (the upgrader refreshes it after the last task).
+func waitUpgradeQueue(t *testing.T, a *App) {
+	t.Helper()
+	waitApp(t, "upgrade task terminal", func() bool {
+		s := a.GetQueue()
+		if s.Total == 0 {
+			return false
+		}
+		for _, task := range s.Tasks {
+			if !task.State.Terminal() {
+				return false
+			}
+		}
+		return true
+	})
+	waitApp(t, "pending drained", func() bool { return len(a.PendingFound()) == 0 })
 }
 
 func TestDownloadFoundKeepsFinalStatusAfterPartialFailure(t *testing.T) {
@@ -414,10 +434,12 @@ func TestDownloadFoundKeepsFinalStatusAfterPartialFailure(t *testing.T) {
 		client: downloader.NewClient(""), index: ix, qualityJournal: j,
 		outputDir: dir, found: []quality.FoundItem{okItem, badItem},
 	}
-	var finishedText string
+	var status textBox
 	a.eventSink = func(name string, args ...any) {
 		if name == "quality-check-finished" && len(args) > 0 {
-			finishedText, _ = args[0].(string)
+			if text, ok := args[0].(string); ok {
+				status.set(text)
+			}
 		}
 	}
 	a.logSink = func(string, string) {}
@@ -425,20 +447,18 @@ func TestDownloadFoundKeepsFinalStatusAfterPartialFailure(t *testing.T) {
 	if err := a.DownloadFound([]quality.FoundItem{okItem, badItem}); err != nil {
 		t.Fatal(err)
 	}
+	waitUpgradeQueue(t, a)
 	if _, err := os.Stat(filepath.Join(dir, "_old", "Artist - Song.mp3")); err != nil {
 		t.Fatalf("successful item must be archived: %v", err)
 	}
-	if strings.Contains(finishedText, "идёт") || finishedText == "" {
-		t.Fatalf("finished event must carry the final status, got %q", finishedText)
+	if text := status.get(); text == "" || strings.Contains(text, "идёт") {
+		t.Fatalf("finished event must carry the final status, got %q", text)
 	}
 }
 
 func TestDownloadFoundGuards(t *testing.T) {
 	if err := (&App{}).DownloadFound(nil); err == nil {
 		t.Fatal("empty selection must fail")
-	}
-	if err := (&App{busy: true}).DownloadFound([]quality.FoundItem{{Path: "x", Key: "x"}}); err == nil {
-		t.Fatal("busy app must reject the upgrade")
 	}
 	if err := (&App{}).DownloadFound([]quality.FoundItem{{Path: "x", Key: "x"}}); err == nil {
 		t.Fatal("missing client must reject the upgrade")
@@ -552,9 +572,6 @@ func TestRejectFoundGuards(t *testing.T) {
 	a, _, item, path := newSearchQualityApp(t)
 	if _, err := (&App{}).RejectFound(item); err == nil {
 		t.Fatal("missing journal must fail")
-	}
-	if _, err := (&App{busy: true}).RejectFound(item); err == nil {
-		t.Fatal("busy app must reject")
 	}
 	a.qualityMu.Lock()
 	a.checking = true

@@ -1,27 +1,43 @@
 package ui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"yamdl/internal/config"
 	"yamdl/internal/downloader"
+	"yamdl/internal/queue"
 )
 
-// eventRecorder captures named frontend events in order.
+// eventRecorder captures named frontend events in order. Queue events come
+// from worker goroutines, so every access is locked.
 type eventRecorder struct {
+	mu    sync.Mutex
 	names []string
 	args  []any
 }
 
 func (r *eventRecorder) sink(name string, args ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.names = append(r.names, name)
 	r.args = append(r.args, args)
 }
 
+func (r *eventRecorder) namesCopy() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.names...)
+}
+
 func (r *eventRecorder) find(name string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for i, n := range r.names {
 		if n == name {
 			return i
@@ -30,7 +46,30 @@ func (r *eventRecorder) find(name string) int {
 	return -1
 }
 
+func (r *eventRecorder) has(name string) bool { return r.find(name) >= 0 }
+
+// lastQueueWorkers returns the worker limit from the last queue event.
+func (r *eventRecorder) lastQueueWorkers() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.names) - 1; i >= 0; i-- {
+		if r.names[i] != "queue" {
+			continue
+		}
+		args, ok := r.args[i].([]any)
+		if !ok || len(args) == 0 {
+			continue
+		}
+		if snap, ok := args[0].(queue.Snapshot); ok {
+			return snap.Workers
+		}
+	}
+	return -1
+}
+
 func (r *eventRecorder) all(name string) []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	var out []int
 	for i, n := range r.names {
 		if n == name {
@@ -40,148 +79,157 @@ func (r *eventRecorder) all(name string) []int {
 	return out
 }
 
-// arg returns the arguments captured for event number i.
-func (r *eventRecorder) arg(i int) []any {
-	return r.args[i].([]any)
+// logRecorder captures journal lines.
+type logRecorder struct {
+	mu   sync.Mutex
+	text []string
 }
 
-// --- 2.1/2.3: жизненный цикл плейлиста: job-start -> строки -> job-end ---
-
-func TestPlaylistJobLifecycle(t *testing.T) {
-	var rec eventRecorder
-	a := &App{
-		client:    downloader.NewClient(""),
-		eventSink: rec.sink,
-		logSink:   func(text, kind string) {},
-		fetchPlaylist: func(string) (*downloader.Playlist, error) {
-			return &downloader.Playlist{
-				Title: "Микс",
-				Tracks: []*downloader.Track{
-					{ID: "1", Artists: []string{"A"}, Title: "T1", Available: true},
-					{ID: "2", Artists: []string{"B"}, Title: "T2", Available: true},
-				},
-			}, nil
-		},
-		downloadBatch: func(tracks []*downloader.Track, _ string, emit func(downloader.Event), onProgress downloader.ProgressFunc) downloader.Summary {
-			var sum downloader.Summary
-			for _, tr := range tracks {
-				emit(downloader.Event{Kind: downloader.KindDownloading, Label: tr.Label(), TrackID: tr.ID})
-				if onProgress != nil {
-					onProgress(downloader.Progress{TrackID: tr.ID, Label: tr.Label(), Done: 50, Total: 100, Percent: 50})
-				}
-				emit(downloader.Event{Kind: downloader.KindDone, Label: tr.Label(), TrackID: tr.ID, Format: "FLAC"})
-				sum.OK++
-			}
-			return sum
-		},
-	}
-	got := a.Download("https://music.yandex.ru/playlists/11111111-2222-3333-4444-555555555555")
-	if got != "" {
-		t.Fatalf("playlist outcome must be in the log, got %q", got)
-	}
-	iStart := rec.find("job-start")
-	iEnd := rec.find("job-end")
-	iTracks := rec.find("tracks")
-	if iStart < 0 || iEnd < 0 || iTracks < 0 {
-		t.Fatalf("lifecycle events missing: %v", rec.names)
-	}
-	if iStart > iTracks {
-		t.Errorf("job-start must come before tracks: %v", rec.names)
-	}
-	if iEnd < iTracks {
-		t.Errorf("job-end must come after tracks: %v", rec.names)
-	}
-	if rec.arg(iStart)[0] != "Микс" || rec.arg(iStart)[1] != 2 {
-		t.Errorf("job-start args = %v, want [Микс 2]", rec.arg(iStart))
-	}
-	// Итог: 2 ok, 0 skip, 0 error.
-	if rec.arg(iEnd)[0] != 2 || rec.arg(iEnd)[1] != 0 || rec.arg(iEnd)[2] != 0 {
-		t.Errorf("job-end args = %v, want [2 0 0]", rec.arg(iEnd))
-	}
-	if len(rec.all("job-start")) != 1 || len(rec.all("job-end")) != 1 {
-		t.Errorf("exactly one job per run, got %v", rec.names)
-	}
+func (l *logRecorder) add(text, _ string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.text = append(l.text, text)
 }
 
-// --- 2.2: одиночный трек — та же job'а из одного трека ---
+func (l *logRecorder) all() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.text...)
+}
 
-func TestSingleTrackJobLifecycle(t *testing.T) {
-	var rec eventRecorder
-	var logs []string
-	tr := &downloader.Track{ID: "9", Artists: []string{"A"}, Title: "Solo", Available: true}
-	a := &App{
-		client:    downloader.NewClient(""),
-		eventSink: rec.sink,
-		logSink:   func(text, kind string) { logs = append(logs, text) },
-		downloadOne: func(got *downloader.Track, _ string, emit func(downloader.Event), onProgress downloader.ProgressFunc) error {
-			if got.ID != "9" {
-				t.Errorf("wrong track: %s", got.ID)
-			}
-			emit(downloader.Event{Kind: downloader.KindDownloading, Label: got.Label(), TrackID: got.ID})
-			if onProgress == nil {
-				t.Error("single track must receive a progress callback, got nil")
-			} else {
-				onProgress(downloader.Progress{TrackID: got.ID, Label: got.Label(), Done: 5, Total: 10, Percent: 50})
-			}
-			emit(downloader.Event{Kind: downloader.KindDone, Label: got.Label(), TrackID: got.ID, Format: "FLAC"})
-			return nil
-		},
-	}
-	// DownloadTrack идёт через ResolveTrack — подменяем fetch через downloadOne,
-	// поэтому зовём внутренний путь после резолва: используем Download c подменой
-	// клиента недоступной... Проще: зовём downloadSingle напрямую.
-	got := a.downloadSingle(tr)
-	if got != "" {
-		t.Fatalf("done outcome must be shown in the log, got %q", got)
-	}
-	iStart := rec.find("job-start")
-	iEnd := rec.find("job-end")
-	iTracks := rec.find("tracks")
-	iStatus := rec.find("track-status")
-	iProgress := rec.find("progress")
-	if iStart < 0 || iEnd < 0 || iTracks < 0 || iStatus < 0 || iProgress < 0 {
-		t.Fatalf("single-track events missing: %v", rec.names)
-	}
-	if !(iStart < iTracks && iTracks < iStatus && iStatus < iEnd) {
-		t.Errorf("event order wrong: %v", rec.names)
-	}
-	if rec.arg(iStart)[0] != "" || rec.arg(iStart)[1] != 1 {
-		t.Errorf("job-start args = %v, want empty title and count 1", rec.arg(iStart))
-	}
-	if rec.arg(iEnd)[0] != 1 || rec.arg(iEnd)[1] != 0 || rec.arg(iEnd)[2] != 0 {
-		t.Errorf("job-end args = %v, want [1 0 0]", rec.arg(iEnd))
-	}
-	// Лог по-прежнему получает полные строки для одиночного трека.
-	var sawDownloading, sawDone bool
-	for _, l := range logs {
-		if l == "[downloading] A — Solo" {
-			sawDownloading = true
-		}
-		if l == "[done] A — Solo (FLAC)" {
-			sawDone = true
+func (l *logRecorder) has(sub string) bool {
+	for _, s := range l.all() {
+		if strings.Contains(s, sub) {
+			return true
 		}
 	}
-	if !sawDownloading || !sawDone {
-		t.Fatalf("log lines required by desktop-app spec missing: %v", logs)
+	return false
+}
+
+func waitApp(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for %s", what)
+}
+
+func trk(id, title string) *downloader.Track {
+	return &downloader.Track{ID: id, Title: title, Artists: []string{"A"}, Available: true}
+}
+
+// newJobApp builds an App with a queue and test seams but no network.
+func newJobApp(t *testing.T, rec *eventRecorder, logs *logRecorder) *App {
+	t.Helper()
+	a := &App{client: downloader.NewClient(""), logSink: func(string, string) {}}
+	a.cfg = config.Config{Workers: 3, OutputDir: t.TempDir(), SubdirTemplate: "%artist%/%album%"}
+	if rec != nil {
+		a.eventSink = rec.sink
+	}
+	if logs != nil {
+		a.logSink = logs.add
+	}
+	return a
+}
+
+func TestQueueLifecycleEvents(t *testing.T) {
+	rec := &eventRecorder{}
+	logs := &logRecorder{}
+	a := newJobApp(t, rec, logs)
+	a.resolveHook = func(_ context.Context, _ string) (queue.Resolved, error) {
+		return queue.Resolved{
+			Label: "Альбом · Микс", Kind: "album", Title: "Микс",
+			Log:    "[album] Микс (2 треков)",
+			Tracks: []*downloader.Track{trk("1", "T1"), trk("2", "T2")},
+		}, nil
+	}
+	a.downloadHook = func(_ context.Context, tr *downloader.Track, _ any, _ func(int64, int64)) (queue.Result, error) {
+		return queue.Result{Format: "FLAC", Path: "/x/" + tr.ID + ".flac"}, nil
+	}
+	a.ensureQueue()
+	if got := a.Submit("https://music.yandex.ru/albums/1"); got != "" {
+		t.Fatalf("submit must be accepted, got %q", got)
+	}
+	waitApp(t, "both tasks done", func() bool { return a.GetQueue().Done == 2 })
+
+	for _, want := range []string{"sources", "task-added", "task-updated", "queue"} {
+		if !rec.has(want) {
+			t.Fatalf("event %q missing: %v", want, rec.namesCopy())
+		}
+	}
+	if rec.has("job-start") || rec.has("job-end") {
+		t.Fatalf("legacy job events must be gone: %v", rec.namesCopy())
+	}
+	if !logs.has("[downloading] A — T1") || !logs.has("[done] A — T1 (FLAC)") {
+		t.Fatalf("journal lines missing: %v", logs.all())
+	}
+	if !logs.has("[album] Микс (2 треков)") {
+		t.Fatalf("source line missing: %v", logs.all())
 	}
 }
 
-// --- 2.1: счёт итогов по событиям ---
+func TestSecondSubmitDoesNotWait(t *testing.T) {
+	rec := &eventRecorder{}
+	a := newJobApp(t, rec, nil)
+	a.cfg.Workers = 2
+	a.resolveHook = func(_ context.Context, link string) (queue.Resolved, error) {
+		switch link {
+		case "https://music.yandex.ru/albums/1":
+			return queue.Resolved{Label: "Альбом · One", Kind: "album", Tracks: []*downloader.Track{trk("1", "T1"), trk("2", "T2")}}, nil
+		default:
+			return queue.Resolved{Label: "Трек · Three", Kind: "track", Tracks: []*downloader.Track{trk("3", "T3")}}, nil
+		}
+	}
+	gate := make(chan struct{})
+	a.downloadHook = func(ctx context.Context, tr *downloader.Track, _ any, _ func(int64, int64)) (queue.Result, error) {
+		select {
+		case <-gate:
+			return queue.Result{Format: "FLAC"}, nil
+		case <-ctx.Done():
+			return queue.Result{}, ctx.Err()
+		}
+	}
+	a.ensureQueue()
+	a.Submit("https://music.yandex.ru/albums/1")
+	waitApp(t, "first two downloading", func() bool { return a.GetQueue().Active == 2 })
 
-func TestCountOutcome(t *testing.T) {
-	var sum downloader.Summary
-	countOutcome(&sum, downloader.Event{Kind: downloader.KindDone})
-	countOutcome(&sum, downloader.Event{Kind: downloader.KindDone})
-	countOutcome(&sum, downloader.Event{Kind: downloader.KindSkipped})
-	countOutcome(&sum, downloader.Event{Kind: downloader.KindFailed})
-	countOutcome(&sum, downloader.Event{Kind: downloader.KindStopped})
-	countOutcome(&sum, downloader.Event{Kind: downloader.KindDownloading}) // не терминальное
-	if sum.OK != 2 || sum.Skipped != 1 || sum.Failed != 1 || sum.Stopped != 1 {
-		t.Fatalf("summary = %+v, want {OK:2 Skipped:1 Failed:1 Stopped:1}", sum)
+	// Вторая ссылка принимается, пока первая ещё качается.
+	if got := a.Submit("https://music.yandex.ru/album/2/track/3"); got != "" {
+		t.Fatalf("second submit must be accepted, got %q", got)
+	}
+	waitApp(t, "third task queued", func() bool {
+		s := a.GetQueue()
+		return s.Total == 3 && s.Waiting == 1 && s.Active == 2
+	})
+	close(gate)
+	waitApp(t, "queue settles", func() bool { return a.GetQueue().Done == 3 })
+}
+
+func TestFallbackReasonReachesJournal(t *testing.T) {
+	logs := &logRecorder{}
+	a := newJobApp(t, nil, logs)
+	a.resolveHook = func(_ context.Context, _ string) (queue.Resolved, error) {
+		return queue.Resolved{Label: "Трек · T", Kind: "track", Tracks: []*downloader.Track{trk("1", "T")}}, nil
+	}
+	a.downloadHook = func(_ context.Context, _ *downloader.Track, _ any, _ func(int64, int64)) (queue.Result, error) {
+		return queue.Result{
+			Format: "MP3", Fallback: true,
+			FallbackReason: "Яндекс вернул nq/aac-mp4 (192 kbps) вместо FLAC",
+		}, nil
+	}
+	a.ensureQueue()
+	a.Submit("https://music.yandex.ru/track/1")
+	waitApp(t, "done", func() bool { return a.GetQueue().Done == 1 })
+	if !logs.has("[done] A — T (MP3) [fallback MP3: Яндекс вернул nq/aac-mp4 (192 kbps) вместо FLAC]") {
+		t.Fatalf("fallback line missing: %v", logs.all())
 	}
 }
 
-// --- 4.1/4.2: настройки ---
+// --- настройки ---
 
 func TestGetSettingsDefaults(t *testing.T) {
 	a := NewApp() // cfg уже с дефолтами
@@ -278,7 +326,7 @@ func TestSaveSettingsWritesAndApplies(t *testing.T) {
 	if a.cfg.Workers != 7 || a.cfg.EmbedCover || a.cfg.ConvertM4A {
 		t.Errorf("cfg not applied: %+v", a.cfg)
 	}
-	if a.client != nil {
+	if a.clientSnapshot() != nil {
 		t.Errorf("empty token must leave the app in preview-only mode")
 	}
 	// Повторное чтение видит те же значения.
@@ -291,64 +339,45 @@ func TestSaveSettingsWritesAndApplies(t *testing.T) {
 	}
 }
 
-// --- 4.3: настройки закрыты на время скачивания ---
+// Настройки доступны и применяются, пока очередь работает: активная
+// задача продолжает качаться, новые берут новые значения.
+func TestSettingsAvailableWhileQueueRuns(t *testing.T) {
+	dir := t.TempDir()
+	env := filepath.Join(dir, ".env")
+	if err := os.WriteFile(env, []byte("OUTPUT_DIR="+dir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := &eventRecorder{}
+	a := newJobApp(t, rec, nil)
+	a.envPath = env
+	a.resolveHook = func(_ context.Context, _ string) (queue.Resolved, error) {
+		return queue.Resolved{Label: "Трек · T", Kind: "track", Tracks: []*downloader.Track{trk("1", "T")}}, nil
+	}
+	gate := make(chan struct{})
+	a.downloadHook = func(ctx context.Context, _ *downloader.Track, _ any, _ func(int64, int64)) (queue.Result, error) {
+		select {
+		case <-gate:
+			return queue.Result{Format: "FLAC"}, nil
+		case <-ctx.Done():
+			return queue.Result{}, ctx.Err()
+		}
+	}
+	a.ensureQueue()
+	a.Submit("https://music.yandex.ru/track/1")
+	waitApp(t, "active", func() bool { return a.GetQueue().Active == 1 })
 
-func TestSettingsLockedWhileBusy(t *testing.T) {
-	a := NewApp()
-	a.setBusy(true)
-	if _, err := a.GetSettings(); err == nil || !strings.Contains(err.Error(), "скачивание") {
-		t.Errorf("GetSettings must be locked while busy, got %v", err)
-	}
-	if err := a.SaveSettings(Settings{OutputDir: "./x", Workers: 3}); err == nil ||
-		!strings.Contains(err.Error(), "скачивание") {
-		t.Errorf("SaveSettings must be locked while busy, got %v", err)
-	}
-	a.setBusy(false)
 	if _, err := a.GetSettings(); err != nil {
-		t.Errorf("unlocked after download: %v", err)
+		t.Fatalf("settings must open during a download: %v", err)
 	}
-}
-
-// --- 2.3: busy поднимается на время Download и опускается после ---
-
-func TestBusyAroundDownload(t *testing.T) {
-	var rec eventRecorder
-	a := &App{
-		client:    downloader.NewClient(""),
-		eventSink: rec.sink,
-		logSink:   func(text, kind string) {},
+	if err := a.SaveSettings(Settings{OutputDir: dir, Workers: 2, ConvertM4A: true, EmbedCover: true, EmbedLyrics: true, SubdirTemplate: "%artist%/%album%"}); err != nil {
+		t.Fatalf("settings must save during a download: %v", err)
 	}
-	a.downloadOne = func(*downloader.Track, string, func(downloader.Event), downloader.ProgressFunc) error {
-		if !a.isBusy() {
-			t.Error("busy must be set while downloading")
-		}
-		return nil
+	if got := a.GetQueue(); got.Active != 1 {
+		t.Fatalf("active download must survive a settings save, got %+v", got)
 	}
-	if got := a.Download("not a link"); !strings.HasPrefix(got, "[error]") {
-		t.Fatalf("bad link must fail, got %q", got)
+	if got := rec.lastQueueWorkers(); got != 2 {
+		t.Fatalf("settings save must emit the new worker limit, got %d", got)
 	}
-	if a.isBusy() {
-		t.Error("busy must be cleared after a failed download")
-	}
-}
-
-// --- fallback reason must reach the log for batch jobs too ---
-
-func TestJobCallbacksLogFallbackReason(t *testing.T) {
-	var logs []string
-	a := &App{logSink: func(text, kind string) { logs = append(logs, text) }}
-	emit, _ := a.jobCallbacks()
-	emit(downloader.Event{
-		Kind: downloader.KindDone, TrackID: "1", Label: "A — T",
-		Format: "MP3", Fallback: true,
-		FallbackReason: "Яндекс вернул nq/aac-mp4 (192 kbps) вместо FLAC",
-	})
-	if len(logs) != 1 {
-		t.Fatalf("want one fallback log line, got %v", logs)
-	}
-	for _, want := range []string{"[fallback]", "A — T", "nq/aac-mp4", "192 kbps"} {
-		if !strings.Contains(logs[0], want) {
-			t.Errorf("log %q lacks %q", logs[0], want)
-		}
-	}
+	close(gate)
+	waitApp(t, "done", func() bool { return a.GetQueue().Done == 1 })
 }

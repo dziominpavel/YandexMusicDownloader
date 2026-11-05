@@ -15,12 +15,19 @@
     }
     return api[name](...args);
   };
-  const setClass = (el, name, on) => {
-    if (!el) return;
-    if (on) el.classList.add(name);
-    else el.classList.remove(name);
-  };
   const hide = (el, value) => { if (el) el.hidden = value; };
+  const PLURAL = (n, one, few, many) => {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return one;
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
+    return many;
+  };
+  const fmtMB = (b) => (Number(b) / 1048576).toFixed(1);
+  const fmtBytes = (done, total) => {
+    if (Number(total) > 0) return fmtMB(done) + ' / ' + fmtMB(total) + ' МБ';
+    return fmtMB(done) + ' МБ';
+  };
 
   // --- Boot splash ---
   const boot = $('boot');
@@ -59,51 +66,33 @@
   const dlIconUse = $('dlIconUse');
   const pasteBtn = $('pasteBtn');
   const clearBtn = $('clearBtn');
-  const composerTitle = $('composerTitle');
-  const composerSub = $('composerSub');
-  const composerHint = $('composerHint');
   const multiHint = $('multiHint');
-
-  const preview = $('preview');
-  const previewSkeleton = $('previewSkeleton');
-  const previewContent = $('previewContent');
+  const previewHint = $('previewHint');
   const previewCover = $('previewCover');
   const previewCoverFallback = $('previewCoverFallback');
   const previewKind = $('previewKind');
   const previewTitle = $('previewTitle');
   const previewSub = $('previewSub');
 
-  const jobHead = $('jobHead');
-  const jobTitle = $('jobTitle');
-  const jobSubtitle = $('jobSubtitle');
-  const bgBanner = $('bgBanner');
-  const bgBannerText = $('bgBannerText');
-  const errorBanner = $('errorBanner');
-  const errorText = $('errorText');
-  const retryBtn = $('retryBtn');
-  const errorClose = $('errorClose');
-  const statusbar = $('statusbar');
-  const sbfillwrap = $('sbfillwrap');
-  const sbfill = $('sbfill');
-  const sbpct = $('sbpct');
-  const sbcount = $('sbcount');
-  const sbbytes = $('sbbytes');
-  const tracksSection = $('tracksSection');
-  const tracks = $('tracks');
-  const trackSummary = $('trackSummary');
-  const summary = $('summary');
-  const summaryTitle = $('summaryTitle');
-  const summaryText = $('summaryText');
-  const summaryDetails = $('summaryDetails');
-  const summaryIconUse = $('summaryIconUse');
-  const summaryOpen = $('summaryOpen');
-  const summaryAgain = $('summaryAgain');
-  const details = $('details');
+  const queueSection = $('queueSection');
+  const qCounts = $('qCounts');
+  const qWorkers = $('qWorkers');
+  const qStopAll = $('qStopAll');
+  const qClear = $('qClear');
+  const qbar = $('qbar');
+  const qfill = $('qfill');
+  const qPct = $('qPct');
+  const qBytes = $('qBytes');
+  const sourcesEl = $('sources');
+  const tasksEl = $('tasks');
+  const progressAnnounce = $('progressAnnounce');
+  const toastEl = $('toast');
+
+  const journal = $('journal');
   const log = $('log');
   const logBadge = $('logBadge');
   const logCopy = $('logCopy');
   const logClear = $('logClear');
-  const progressAnnounce = $('progressAnnounce');
   const dropOverlay = $('dropOverlay');
 
   const settingsBtn = $('settingsBtn');
@@ -159,16 +148,6 @@
   const qualityDownload = $('qualityDownload');
   const qualityClose = $('qualityClose');
 
-  const dupOverlay = $('dupOverlay');
-  const dupCard = $('dupCard');
-  const dupPercent = $('dupPercent');
-  const dupTrack = $('dupTrack');
-  const dupMatchName = $('dupMatchName');
-  const dupMatchPath = $('dupMatchPath');
-  const dupFormat = $('dupFormat');
-  const dupYes = $('dupYes');
-  const dupNo = $('dupNo');
-
   const confirmOverlay = $('confirmOverlay');
   const confirmCard = $('confirmCard');
   const confirmTitle = $('confirmTitle');
@@ -177,52 +156,29 @@
   const confirmOk = $('confirmOk');
 
   // --- State ---
-  let busy = false;
-  let lastLink = '';
-  let uiState = 'idle';
-  let jobIsQuality = false;
+  const tasks = new Map();       // key -> task
+  const rowEls = new Map();      // key -> row element
+  let sources = [];
+  let snapshot = null;
+  let stateName = 'empty';
+  let filterSource = '';
+  let lastSubmit = '';
+  let lastAnnounce = -1;
   let previewSeq = 0;
   let previewTimer = 0;
-  const clearPreviewTimer = () => {
-    if (typeof clearTimeout === 'function') clearTimeout(previewTimer);
-  };
-  const schedulePreview = () => {
-    if (typeof setTimeout === 'function') previewTimer = setTimeout(updatePreview, 500);
-  };
+  let toastTimer = 0;
   let logErrorCount = 0;
   let qualityChecking = false;
   let qualityOutputDir = '';
   let qualityItems = [];
   let qualityListOpen = false;
   let rejectedItems = [];
-  let dupOpen = false;
   let settingsSnapshot = null;
   let confirmAction = null;
   let confirmReturn = null;
   let confirmPreviousFocus = null;
   let activeModal = null;
-
-  const job = {
-    total: 0,
-    states: new Map(),
-    ended: false,
-    result: null,
-    lastAnnounce: -1,
-    lastDone: -1,
-  };
-  const trows = new Map();
-
-  function plural(n, one, few, many) {
-    const mod10 = n % 10;
-    const mod100 = n % 100;
-    if (mod10 === 1 && mod100 !== 11) return one;
-    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
-    return many;
-  }
-
-  function fmtMB(b) {
-    return (Number(b) / 1048576).toFixed(1);
-  }
+  let queueReady = false;
 
   function announce(text) {
     if (!progressAnnounce || !text) return;
@@ -230,13 +186,24 @@
     progressAnnounce.textContent = text;
   }
 
+  function showToast(text, ms) {
+    if (!toastEl) return;
+    toastEl.textContent = text || '';
+    hide(toastEl, false);
+    if (typeof clearTimeout === 'function') clearTimeout(toastTimer);
+    if (typeof setTimeout === 'function') {
+      toastTimer = setTimeout(() => hide(toastEl, true), ms || 4200);
+    }
+  }
+
+  // --- Journal ---
   function updateLogBadge() {
     if (!logBadge) return;
     logBadge.textContent = String(logErrorCount);
     logBadge.hidden = logErrorCount === 0;
   }
 
-  function line(text, cls) {
+  function appendLog(text, cls) {
     if (!log) return;
     const div = document.createElement('div');
     if (cls) div.className = cls;
@@ -249,428 +216,547 @@
       logErrorCount++;
       updateLogBadge();
     }
-    if (details && details.open && typeof log.scrollHeight === 'number') {
+    if (journal && journal.open && typeof log.scrollHeight === 'number') {
       log.scrollTop = log.scrollHeight;
     }
   }
 
-  function parseTrackStatus(raw) {
-    const s = String(raw || '');
-    if (s.startsWith('[done]')) {
-      const inside = /\(([^)]+)\)/.exec(s);
-      let format = '';
-      if (inside && /flac/i.test(inside[1])) format = 'FLAC';
-      else if (inside && /mp3/i.test(inside[1])) format = 'MP3';
-      else if (/flac/i.test(s)) format = 'FLAC';
-      else if (/mp3/i.test(s)) format = 'MP3';
-      let label = 'Готово';
-      if (format) label += ' - ' + format;
-      if (s.includes('[ALAC→FLAC]') || s.includes('[ALAC->FLAC]')) label = 'Готово - FLAC';
-      return { label, format, kind: 'done', terminal: true };
-    }
-    if (s.startsWith('[skip]')) {
-      let label = 'Пропущено';
-      if (s.includes('already exists')) label += ' - уже есть';
-      else if (s.includes('duplicate')) label += ' - дубль';
-      else if (s.includes('unavailable')) label += ' - недоступно';
-      return { label, format: '', kind: 'info', terminal: true };
-    }
-    if (s.startsWith('[error]')) {
-      const reason = s.replace(/^\[error\]\s*/, '').trim();
-      return { label: reason ? 'Ошибка: ' + reason : 'Ошибка', format: '', kind: 'err', terminal: true };
-    }
-    if (s.startsWith('[stopped]')) return { label: 'Остановлено', format: '', kind: 'stopped', terminal: false };
-    if (s.startsWith('[downloading]')) return { label: 'Скачивается', format: '', kind: 'info', terminal: false };
-    return { label: 'Ожидание', format: '', kind: '', terminal: false };
+  // --- Formatting ---
+  function shortSource(label) {
+    const s = String(label || '');
+    const i = s.indexOf(' · ');
+    return i >= 0 ? s.slice(i + 3) : s;
   }
 
-  function setState(next) {
-    uiState = next;
+  function reasonShort(reason) {
+    const r = String(reason || '');
+    if (r === 'дубль, отменено пользователем') return 'дубль';
+    return r;
+  }
+
+  function stateText(t) {
+    switch (t.state) {
+      case 'resolving': return 'определяется…';
+      case 'queued': return 'в очереди' + (t.position > 0 ? ' #' + t.position : '');
+      case 'downloading': return t.percent >= 0 ? 'скачивается ' + t.percent + '%' : 'скачивается';
+      case 'needs-review': return 'возможен дубль' + (t.candidate ? ' ' + t.candidate.percent + '%' : '');
+      case 'done': return 'готово';
+      case 'skipped': return 'пропущено' + (reasonShort(t.reason) ? ' · ' + reasonShort(t.reason) : '');
+      case 'error': return 'ошибка';
+      case 'canceled': return 'отменено';
+      default: return 'ожидание';
+    }
+  }
+
+  function stateColor(t) {
+    switch (t.state) {
+      case 'done': return 'status-done';
+      case 'error': return 'status-err';
+      case 'canceled': return 'status-stopped';
+      case 'needs-review': return 'status-review';
+      case 'downloading': return 'status-info';
+      default: return '';
+    }
+  }
+
+  function iconButton(iconName, label, handler) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn btn-ghost btn-sm icon-btn';
+    b.title = label;
+    b.setAttribute('aria-label', label);
+    const svg = document.createElementNS ? document.createElementNS('http://www.w3.org/2000/svg', 'svg') : document.createElement('svg');
+    svg.setAttribute('class', 'icon');
+    const use = document.createElementNS ? document.createElementNS('http://www.w3.org/2000/svg', 'use') : document.createElement('use');
+    use.setAttribute('href', '#icon-' + iconName);
+    svg.appendChild(use);
+    b.appendChild(svg);
+    b.onclick = (e) => {
+      if (e && e.stopPropagation) e.stopPropagation();
+      handler();
+    };
+    return b;
+  }
+
+  function textButton(label, cls, handler) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn ' + cls + ' btn-sm';
+    b.textContent = label;
+    b.onclick = (e) => {
+      if (e && e.stopPropagation) e.stopPropagation();
+      handler();
+    };
+    return b;
+  }
+
+  function call(name, ...args) {
+    callApp(name, ...args).catch((e) => {
+      appendLog('[error] ' + e, 'err');
+      showToast(String(e));
+    });
+  }
+
+  // --- Task rows ---
+  function makeRow(t) {
+    const row = document.createElement('div');
+    row.className = 'task-row';
+    if (!row.dataset) row.dataset = {};
+    row.dataset.key = t.key;
+
+    const cover = document.createElement('span');
+    cover.className = 'task-cover';
+    const coverIcon = document.createElement('svg');
+    coverIcon.setAttribute('class', 'icon');
+    const use = document.createElement('use');
+    use.setAttribute('href', '#icon-vinyl');
+    coverIcon.appendChild(use);
+    cover.appendChild(coverIcon);
+
+    const main = document.createElement('div');
+    main.className = 'task-main';
+    const line = document.createElement('div');
+    line.className = 'task-line';
+    const title = document.createElement('span');
+    title.className = 'task-title';
+    const source = document.createElement('span');
+    source.className = 'task-source';
+    const pill = document.createElement('span');
+    pill.className = 'format-pill';
+    pill.hidden = true;
+    line.appendChild(title);
+    line.appendChild(source);
+    line.appendChild(pill);
+
+    const meta = document.createElement('div');
+    meta.className = 'task-meta-line';
+    const state = document.createElement('span');
+    state.className = 'task-state';
+    const size = document.createElement('span');
+    size.className = 'task-size';
+    const reason = document.createElement('span');
+    reason.className = 'task-reason';
+    meta.appendChild(state);
+    meta.appendChild(size);
+    meta.appendChild(reason);
+
+    main.appendChild(line);
+    main.appendChild(meta);
+
+    const actions = document.createElement('div');
+    actions.className = 'task-actions';
+
+    const dup = document.createElement('div');
+    dup.className = 'task-dup';
+    dup.hidden = true;
+    const dupPath = document.createElement('div');
+    dupPath.className = 'dup-path';
+    const dupActions = document.createElement('div');
+    dupActions.className = 'dup-actions';
+    dup.appendChild(dupPath);
+    dup.appendChild(dupActions);
+
+    const bar = document.createElement('div');
+    bar.className = 'task-progress';
+    bar.hidden = true;
+    const fill = document.createElement('div');
+    fill.className = 'task-fill';
+    bar.appendChild(fill);
+
+    row.appendChild(cover);
+    row.appendChild(main);
+    row.appendChild(actions);
+    row.appendChild(dup);
+    row.appendChild(bar);
+    row._refs = { main, line, title, source, pill, meta, state, size, reason, actions, dup, dupPath, dupActions, bar, fill };
+    row.dataset.state = '';
+    return row;
+  }
+
+  function ensureRow(t) {
+    let row = rowEls.get(t.key);
+    if (!row) {
+      row = makeRow(t);
+      rowEls.set(t.key, row);
+      if (tasksEl) tasksEl.appendChild(row);
+    }
+    return row;
+  }
+
+  function renderTaskActions(row, t) {
+    const refs = row._refs;
+    const actions = refs.actions;
+    actions.innerHTML = '';
+    if (t.state === 'downloading' || t.state === 'queued' || t.state === 'resolving') {
+      actions.appendChild(iconButton('x', 'Отменить задачу', () => call('CancelTask', t.key)));
+      return;
+    }
+    if (t.state === 'error' || t.state === 'canceled') {
+      actions.appendChild(iconButton('refresh', 'Повторить', () => call('RetryTask', t.key)));
+      actions.appendChild(iconButton('x', 'Убрать строку', () => call('RemoveTask', t.key)));
+      return;
+    }
+    if (t.state === 'done' || t.state === 'skipped') {
+      actions.appendChild(iconButton('folder', 'Открыть папку', () => openFolder()));
+      actions.appendChild(iconButton('x', 'Убрать строку', () => call('RemoveTask', t.key)));
+    }
+  }
+
+  function updateTaskRow(t) {
+    const row = ensureRow(t);
+    const refs = row._refs;
+    row.dataset.state = t.state || '';
+    row.dataset.source = t.sourceKey || '';
+
+    refs.title.textContent = t.label || 'Задача';
+    refs.title.title = t.label || '';
+    refs.source.textContent = shortSource(t.sourceLabel);
+    refs.source.hidden = sources.length < 2;
+
+    // Формат-пилюля рядом с названием.
+    const pill = refs.pill;
+    if (pill) {
+      const fmt = t.state === 'done' && t.format ? String(t.format).toUpperCase() : '';
+      pill.hidden = fmt === '';
+      if (fmt) {
+        pill.textContent = fmt;
+        pill.className = 'format-pill ' + fmt.toLowerCase();
+        if (t.fallbackReason) pill.title = t.fallbackReason;
+      }
+    }
+
+    refs.state.textContent = stateText(t);
+    refs.state.className = 'task-state ' + stateColor(t);
+
+    let sizeText = '';
+    if (t.state === 'downloading') sizeText = fmtBytes(t.done, t.total);
+    else if (t.state === 'done' && t.total > 0) sizeText = fmtMB(t.total) + ' МБ';
+    refs.size.textContent = sizeText;
+    refs.size.hidden = sizeText === '';
+
+    let reasonText = '';
+    if (t.state === 'error') reasonText = reasonShort(t.reason);
+    else if (t.state === 'skipped' && t.reason && t.reason !== 'уже есть') reasonText = '';
+    refs.reason.textContent = reasonText;
+    refs.reason.title = reasonText;
+    refs.reason.hidden = reasonText === '';
+
+    // Прогресс-полоса: только активная задача и отменённая (замороженный прогресс).
+    const showBar = t.state === 'downloading' || t.state === 'canceled';
+    refs.bar.hidden = !showBar;
+    if (showBar) {
+      let pct = Number(t.percent);
+      const indeterminate = t.state === 'downloading' && !(Number(t.total) > 0);
+      refs.fill.style.width = indeterminate ? '100%' : Math.max(0, Math.min(100, pct > 0 ? pct : 0)) + '%';
+      refs.fill.className = 'task-fill';
+      if (t.state === 'canceled') refs.fill.classList.add('stopped');
+      if (indeterminate) refs.fill.classList.add('indeterminate');
+    }
+
+    // Дубль: решение прямо в строке.
+    const showDup = t.state === 'needs-review' && t.candidate;
+    refs.dup.hidden = !showDup;
+    if (showDup) {
+      const c = t.candidate;
+      refs.dupPath.textContent = c.filePath || c.fileName || '';
+      refs.dupActions.innerHTML = '';
+      refs.dupActions.appendChild(textButton('Пропустить', 'btn-secondary', () => call('ResolveDuplicate', t.key, false)));
+      refs.dupActions.appendChild(textButton('Скачать всё равно', 'btn-primary', () => call('ResolveDuplicate', t.key, true)));
+    }
+
+    const actionsKey = t.state;
+    if (row.dataset.actionsState !== actionsKey) {
+      row.dataset.actionsState = actionsKey;
+      renderTaskActions(row, t);
+    }
+
+    if (filterSource && t.sourceKey !== filterSource) row.hidden = true;
+    else row.hidden = false;
+  }
+
+  function removeRow(key) {
+    const row = rowEls.get(key);
+    if (!row) return;
+    if (typeof row.remove === 'function') row.remove();
+    else if (row.parent && row.parent.removeChild) row.parent.removeChild(row);
+    rowEls.delete(key);
+    tasks.delete(key);
+  }
+
+  function orderRows(list) {
+    if (!tasksEl) return;
+    const keys = list.map((t) => t.key);
+    const current = Array.from(tasksEl.children || []);
+    let same = current.length === keys.length;
+    if (same) {
+      for (let i = 0; i < keys.length; i++) {
+        if (!current[i] || !current[i].dataset || current[i].dataset.key !== keys[i]) { same = false; break; }
+      }
+    }
+    if (same) return;
+    for (const key of keys) {
+      const row = rowEls.get(key);
+      if (!row) continue;
+      if (typeof row.remove === 'function') row.remove();
+      else if (row.parent && row.parent.removeChild) row.parent.removeChild(row);
+      tasksEl.appendChild(row);
+    }
+  }
+
+  // --- Sources ---
+  function renderSources() {
+    if (!sourcesEl) return;
+    sourcesEl.innerHTML = '';
+    if (!sources.length || sources.length < 2) {
+      sourcesEl.hidden = true;
+      return;
+    }
+    sourcesEl.hidden = false;
+    for (const src of sources) {
+      let total = 0;
+      let finished = 0;
+      for (const t of tasks.values()) {
+        if (t.sourceKey !== src.key || t.state === 'resolving') continue;
+        total++;
+        if (t.state === 'done' || t.state === 'skipped' || t.state === 'error' || t.state === 'canceled') finished++;
+      }
+      const chip = document.createElement('div');
+      chip.className = 'source-chip';
+      if (filterSource === src.key) chip.classList.add('active');
+      const label = document.createElement('button');
+      label.type = 'button';
+      label.className = 'source-label';
+      label.textContent = src.label || src.link || 'Источник';
+      label.title = src.link || src.label || '';
+      label.onclick = () => {
+        filterSource = filterSource === src.key ? '' : src.key;
+        renderSources();
+        applyFilter();
+      };
+      const count = document.createElement('span');
+      count.className = 'source-count';
+      count.textContent = finished + '/' + total;
+      const x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'source-x';
+      x.setAttribute('aria-label', 'Отменить все задачи источника');
+      x.title = 'Отменить все задачи источника';
+      const xi = document.createElement('svg');
+      xi.setAttribute('class', 'icon');
+      const xu = document.createElement('use');
+      xu.setAttribute('href', '#icon-x');
+      xi.appendChild(xu);
+      x.appendChild(xi);
+      x.onclick = (e) => {
+        if (e && e.stopPropagation) e.stopPropagation();
+        call('CancelSource', src.key);
+      };
+      chip.appendChild(label);
+      chip.appendChild(count);
+      chip.appendChild(x);
+      sourcesEl.appendChild(chip);
+    }
+  }
+
+  function applyFilter() {
+    for (const [key, row] of rowEls.entries()) {
+      const t = tasks.get(key);
+      row.hidden = !!(filterSource && t && t.sourceKey !== filterSource);
+    }
+  }
+
+  // --- Queue bar and screen state ---
+  function renderBar(snap) {
+    if (!snap) return;
+    if (qPct) qPct.textContent = (snap.percent || 0) + '%';
+    if (qfill) qfill.style.width = Math.max(0, Math.min(100, snap.percent || 0)) + '%';
+    if (qbar) qbar.setAttribute('aria-valuenow', String(snap.percent || 0));
+    if (qBytes) {
+      qBytes.textContent = snap.bytesTotal > 0 ? fmtBytes(snap.bytesDone, snap.bytesTotal) : '';
+    }
+    if (qfill) {
+      qfill.className = 'qfill';
+      const settled = !snap.active && !snap.waiting && !snap.review;
+      if (settled && snap.failed > 0) qfill.classList.add('err');
+      else if (settled && snap.canceled > 0) qfill.classList.add('stopped');
+      else if (settled) qfill.classList.add('done');
+    }
+    if (qCounts) {
+      qCounts.innerHTML = '';
+      const parts = [
+        ['qc-active', snap.active, 'качается', 'качаются', 'качается'],
+        ['qc-wait', snap.waiting, 'в очереди', 'в очереди', 'в очереди'],
+        ['qc-review', snap.review, 'ждёт решения', 'ждут решения', 'ждут решения'],
+        ['qc-done', snap.done, 'готово', 'готово', 'готово'],
+        ['qc-error', snap.failed, 'ошибка', 'ошибки', 'ошибок'],
+        ['qc-error', snap.canceled, 'отменено', 'отменено', 'отменено'],
+      ];
+      for (const [cls, n, one, few, many] of parts) {
+        if (!n) continue;
+        const span = document.createElement('span');
+        span.className = cls;
+        const word = n === 1 ? one : PLURAL(n, one, few, many);
+        span.textContent = n + ' ' + word;
+        qCounts.appendChild(span);
+      }
+    }
+    if (qWorkers) {
+      const n = snap.workers || 0;
+      qWorkers.textContent = n > 0 ? 'потоков: ' + n : '';
+      qWorkers.title = 'Сколько треков качать одновременно; меняется в «Настройках»';
+    }
+    if (qStopAll) qStopAll.hidden = !(snap.active || snap.waiting || snap.review);
+    if (qClear) {
+      const finished = (snap.done || 0) + (snap.skipped || 0) + (snap.failed || 0) + (snap.canceled || 0);
+      qClear.hidden = finished === 0;
+    }
+    if (qPct) qPct.textContent = (snap.percent || 0) + '%';
+  }
+
+  function computeState(snap) {
+    if (!snap || !snap.total) return 'empty';
+    if (snap.active || snap.waiting || snap.review || (snap.tasks || []).some((t) => t.state === 'resolving')) return 'working';
+    return 'settled';
+  }
+
+  function applyState(snap) {
+    const next = computeState(snap);
+    stateName = next;
     if (document.body && document.body.setAttribute) {
       document.body.setAttribute('data-state', next);
     }
-    hide(composerHint, next !== 'idle' && next !== 'preview');
-    hide(preview, next !== 'preview');
-    hide(jobHead, !(next === 'active' || next === 'done' || next === 'error'));
-    hide(tracksSection, !(next === 'active' || next === 'done' || next === 'error'));
-    hide(statusbar, next !== 'active');
-    hide(summary, !(next === 'done' || next === 'error'));
-    hide(errorBanner, next !== 'error');
-    hide(bgBanner, !(jobIsQuality && (next === 'active' || next === 'done')));
-
-    if (composerTitle) {
-      if (next === 'active') composerTitle.textContent = 'Скачивание';
-      else if (next === 'done') composerTitle.textContent = 'Готово';
-      else if (next === 'error') composerTitle.textContent = 'Попробовать снова';
-      else if (next === 'preview') composerTitle.textContent = 'Готово к скачиванию';
-      else composerTitle.textContent = 'Что скачать?';
-    }
-    if (composerSub) {
-      if (next === 'idle') composerSub.textContent = 'Вставьте ссылку на трек, альбом или плейлист';
-      else if (next === 'preview') composerSub.textContent = 'Проверьте ссылку и нажмите «Скачать»';
-      else if (next === 'active') composerSub.textContent = '';
-      else if (next === 'done') composerSub.textContent = 'Можно вставить следующую ссылку';
-      else composerSub.textContent = 'Ссылка сохранена — можно повторить';
-    }
+    if (queueSection) queueSection.hidden = next === 'empty';
+    if (next === 'empty' && filterSource) filterSource = '';
   }
 
-  function setIcon(name) {
-    if (dlIconUse && dlIconUse.setAttribute) {
-      dlIconUse.setAttribute('href', '#icon-' + name);
+  function syncSnapshot(snap) {
+    if (!snap || typeof snap !== 'object') return;
+    snapshot = snap;
+    if (Array.isArray(snap.sources)) sources = snap.sources;
+    const list = Array.isArray(snap.tasks) ? snap.tasks : [];
+    const seen = new Set();
+    for (const t of list) {
+      tasks.set(t.key, t);
+      ensureRow(t);
+      seen.add(t.key);
     }
-  }
-
-  function setBusyUi(active) {
-    busy = active;
-    if (!btn) return;
-    if (active) {
-      setClass(btn, 'stop', true);
-      btn.disabled = false;
-      if (dlLabel) dlLabel.textContent = jobIsQuality ? 'Остановить обновление' : 'Остановить';
-      setIcon('stop');
-      if (settingsBtn) settingsBtn.disabled = true;
-      if (sCheckNow) sCheckNow.disabled = true;
-    } else {
-      setClass(btn, 'stop', false);
-      btn.disabled = false;
-      if (dlLabel) dlLabel.textContent = 'Скачать';
-      setIcon('download');
-      if (settingsBtn) settingsBtn.disabled = false;
-      if (sCheckNow) sCheckNow.disabled = qualityChecking;
-      if (input) input.focus();
+    for (const key of Array.from(rowEls.keys())) {
+      if (!seen.has(key)) removeRow(key);
     }
+    for (const t of list) updateTaskRow(t);
+    orderRows(list);
+    renderSources();
+    renderBar(snap);
+    applyState(snap);
+    announceProgress(snap);
   }
 
-  function updateTrackSummary() {
-    if (!trackSummary) return;
-    trackSummary.textContent = job.total > 0 ? trows.size + ' из ' + job.total : '';
-    if (jobSubtitle && job.total > 0) {
-      jobSubtitle.textContent = trows.size + ' из ' + job.total + ' ' + plural(job.total, 'трека', 'треков', 'треков');
-    }
-  }
-
-  // --- Statusbar ---
-  let sbDirty = false;
-
-  function setTrackState(id, share, done, total) {
-    let s = job.states.get(id);
-    if (!s) {
-      s = { share: 0, done: 0, total: 0 };
-      job.states.set(id, s);
-    }
-    if (share !== null) s.share = share;
-    if (done !== null) s.done = done;
-    if (total !== null) s.total = total;
-    scheduleSB();
-  }
-
-  function scheduleSB() {
-    if (sbDirty) return;
-    sbDirty = true;
-    requestAnimationFrame(() => {
-      sbDirty = false;
-      drawSB();
-    });
-  }
-
-  function drawSB() {
-    if (job.total <= 0) return;
-    let done = 0;
-    let sum = 0;
-    let bytesDone = 0;
-    let bytesTotal = 0;
-    let anyTotal = false;
-    for (const s of job.states.values()) {
-      sum += s.share;
-      if (s.share >= 1) done++;
-      if (s.total > 0) {
-        bytesDone += s.done;
-        bytesTotal += s.total;
-        anyTotal = true;
+  function announceProgress(snap) {
+    const pct = snap.percent || 0;
+    const milestone = pct >= 100 ? 100 : pct >= 75 ? 75 : pct >= 50 ? 50 : pct >= 25 ? 25 : -1;
+    if (milestone > lastAnnounce) {
+      lastAnnounce = milestone;
+      if (milestone === 100) {
+        announce('Очередь завершена: готово ' + snap.done + ', ошибок ' + snap.failed + ', пропущено ' + snap.skipped + '.');
+      } else if (milestone > 0) {
+        announce('Загрузка ' + milestone + ' процентов.');
       }
     }
-    const pct = Math.min(100, Math.round((sum / job.total) * 100));
-    if (sbfill) sbfill.style.width = pct + '%';
-    if (sbpct) sbpct.textContent = pct + '%';
-    if (sbcount) sbcount.textContent = done + '/' + job.total + ' треков';
-    if (sbbytes) sbbytes.textContent = anyTotal ? fmtMB(bytesDone) + '/' + fmtMB(bytesTotal) + ' МБ' : '';
-    if (sbfillwrap && sbfillwrap.setAttribute) {
-      sbfillwrap.setAttribute('aria-valuenow', String(pct));
-    }
+  }
 
-    if (pct >= 100 && job.lastAnnounce < 100) {
-      announce('Загрузка завершена');
-      job.lastAnnounce = 100;
-    } else if (pct >= 75 && job.lastAnnounce < 75) {
-      announce('Загрузка 75 процентов');
-      job.lastAnnounce = 75;
-    } else if (pct >= 50 && job.lastAnnounce < 50) {
-      announce('Загрузка 50 процентов');
-      job.lastAnnounce = 50;
-    } else if (pct >= 25 && job.lastAnnounce < 25) {
-      announce('Загрузка 25 процентов');
-      job.lastAnnounce = 25;
-    }
-    if (done !== job.lastDone && done > 0) {
-      announce('Готово ' + done + ' из ' + job.total + ' треков');
-      job.lastDone = done;
-    }
+  // --- Event handlers (also used by the test harness) ---
+  function handleTaskAdded(t) {
+    if (!t || !t.key) return;
+    tasks.set(t.key, t);
+    ensureRow(t);
+    updateTaskRow(t);
+    renderSources();
+  }
 
-    if (job.ended && job.result) {
-      if (job.result.stopped) {
-        if (sbfill) sbfill.className = 'stopped';
-        if (sbcount) sbcount.textContent = done + '/' + job.total + ' треков, остановлено';
-      } else if (job.result.failed > 0) {
-        if (sbfill) sbfill.className = 'err';
-        if (sbcount) sbcount.textContent = done + '/' + job.total + ' треков, ошибок: ' + job.result.failed;
-      } else if (sbfill) {
-        sbfill.className = 'done';
+  function handleTaskUpdated(t) {
+    if (!t || !t.key) return;
+    tasks.set(t.key, t);
+    updateTaskRow(t);
+    renderSources();
+  }
+
+  function handleTaskRemoved(key) {
+    removeRow(key);
+    renderSources();
+  }
+
+  function handleSources(list) {
+    sources = Array.isArray(list) ? list : [];
+    renderSources();
+    for (const [key, row] of rowEls.entries()) {
+      const t = tasks.get(key);
+      if (!t) continue;
+      const src = t.sourceLabel ? shortSource(t.sourceLabel) : '';
+      if (row._refs && row._refs.source) {
+        row._refs.source.textContent = src;
+        row._refs.source.hidden = sources.length < 2;
       }
-    } else if (sbfill) {
-      sbfill.className = '';
     }
+    applyFilter();
   }
 
-  // --- Tracks ---
-  function trackList(items) {
-    if (!tracks) return;
-    items.forEach((pair) => {
-      const id = pair[0];
-      const label = pair[1] || 'Трек';
-      if (trows.has(id)) return;
-
-      const row = document.createElement('div');
-      row.className = 'track-row';
-
-      const index = document.createElement('span');
-      index.className = 'track-index';
-      index.textContent = String(trows.size + 1).padStart(2, '0');
-
-      const main = document.createElement('div');
-      main.className = 'track-main';
-      const title = document.createElement('div');
-      title.className = 'track-title';
-      title.textContent = label;
-      title.title = label;
-      const meta = document.createElement('div');
-      meta.className = 'track-meta';
-      const format = document.createElement('span');
-      format.className = 'format-pill';
-      format.hidden = true;
-      const size = document.createElement('span');
-      size.className = 'track-size';
-      meta.appendChild(format);
-      meta.appendChild(size);
-      main.appendChild(title);
-      main.appendChild(meta);
-
-      const bar = document.createElement('div');
-      bar.className = 'track-bar';
-      const fill = document.createElement('div');
-      fill.className = 'track-fill';
-      bar.appendChild(fill);
-
-      const stat = document.createElement('span');
-      stat.className = 'track-status';
-      stat.textContent = 'Ожидание';
-
-      row.appendChild(index);
-      row.appendChild(main);
-      row.appendChild(bar);
-      row.appendChild(stat);
-      tracks.appendChild(row);
-
-      trows.set(id, { row, stat, bar, fill, size, format, title });
-      if (!job.states.has(id)) setTrackState(id, 0, null, null);
-    });
-    updateTrackSummary();
-  }
-
-  function trackStatus(id, status, kind) {
-    let t = trows.get(id);
-    if (!t) {
-      trackList([[id, '']]);
-      t = trows.get(id);
-    }
-    if (!t) return;
-    const parsed = parseTrackStatus(status);
-    t.stat.textContent = parsed.label;
-    t.stat.className = 'track-status' + (parsed.kind ? ' status-' + parsed.kind : '');
-    if (parsed.format) {
-      t.format.textContent = parsed.format;
-      t.format.hidden = false;
-      t.format.className = 'format-pill ' + parsed.format.toLowerCase();
-    } else {
-      t.format.hidden = true;
-    }
-    if (parsed.terminal) {
-      setTrackState(id, 1, null, null);
-      if (t.fill) {
-        t.fill.style.width = '100%';
-        setClass(t.fill, 'done', parsed.kind === 'done');
-        setClass(t.fill, 'err', parsed.kind === 'err');
-        setClass(t.fill, 'skipped', parsed.kind === 'info');
+  function handleQueue(snap) {
+    queueReady = true;
+    snapshot = snap;
+    if (Array.isArray(snap.sources)) sources = snap.sources;
+    const list = Array.isArray(snap.tasks) ? snap.tasks : [];
+    for (const t of list) {
+      const prev = tasks.get(t.key);
+      tasks.set(t.key, t);
+      if (!prev) {
+        ensureRow(t);
+        updateTaskRow(t);
+      } else if (prev.state !== t.state) {
+        updateTaskRow(t);
+      } else if (t.state === 'queued') {
+        const row = rowEls.get(t.key);
+        if (row && row._refs) row._refs.state.textContent = stateText(t);
       }
-      if (t.title) announce(parsed.label + ': ' + t.title.textContent);
-    } else if (status.startsWith('[downloading]') && !job.states.has(id)) {
-      setTrackState(id, 0, null, null);
     }
+    orderRows(list);
+    renderSources();
+    renderBar(snap);
+    applyState(snap);
+    announceProgress(snap);
   }
 
-  function progress(id, label, pct, done, total) {
-    const pctNum = Number(pct);
-    setTrackState(id, pctNum >= 0 ? pctNum / 100 : 0, Number(done), Number(total));
-    let t = trows.get(id);
-    if (!t) {
-      trackList([[id, label]]);
-      t = trows.get(id);
-    }
-    if (!t) return;
-    const hasTotal = Number(total) > 0 && pctNum >= 0;
-    t.fill.style.width = hasTotal ? pctNum + '%' : '100%';
-    setClass(t.fill, 'indeterminate', !hasTotal);
-    t.bar.title = hasTotal
-      ? pctNum + '% ' + fmtMB(done) + '/' + fmtMB(total) + ' МБ'
-      : fmtMB(done) + ' МБ';
-    t.size.textContent = hasTotal
-      ? fmtMB(done) + ' / ' + fmtMB(total) + ' МБ'
-      : fmtMB(done) + ' МБ';
-  }
-
-  // --- Job lifecycle ---
-  function jobReset(title, count) {
-    job.total = count;
-    job.states = new Map();
-    job.ended = false;
-    job.result = null;
-    job.lastAnnounce = -1;
-    job.lastDone = -1;
-    if (tracks) tracks.innerHTML = '';
-    trows.clear();
-    if (log) log.innerHTML = '';
-    logErrorCount = 0;
-    updateLogBadge();
-    setClass(summary, 'error', false);
-    hide(summary, true);
-    hide(errorBanner, true);
-    hide(bgBanner, !jobIsQuality);
-    if (jobTitle) jobTitle.textContent = title || 'Скачивание';
-    if (jobSubtitle) {
-      jobSubtitle.textContent = count + ' ' + plural(count, 'трек', 'трека', 'треков');
-    }
-    if (trackSummary) trackSummary.textContent = '0 из ' + count;
-    if (sbfill) {
-      sbfill.className = '';
-      sbfill.style.width = '0%';
-    }
-    if (sbpct) sbpct.textContent = '0%';
-    if (sbcount) sbcount.textContent = '0/' + count + ' треков';
-    if (sbbytes) sbbytes.textContent = '';
-    setState('active');
-    scheduleSB();
-  }
-
-  function showSummary(ok, skip, failed, stopped) {
-    if (!summary) return;
-    const title = stopped
-      ? 'Остановлено'
-      : failed > 0
-        ? (jobIsQuality ? 'Обновление FLAC завершено с ошибками' : 'Завершено с ошибками')
-        : (jobIsQuality ? 'Обновление FLAC завершено' : 'Готово');
-    if (summaryTitle) summaryTitle.textContent = title;
-    if (summaryText) {
-      summaryText.textContent = 'Готово: ' + ok + ' · Пропущено: ' + skip + ' · Ошибки: ' + failed;
-    }
-    let flac = 0;
-    let mp3 = 0;
-    for (const t of trows.values()) {
-      if (!t.format || t.format.hidden) continue;
-      if (t.format.textContent === 'FLAC') flac++;
-      else if (t.format.textContent === 'MP3') mp3++;
-    }
-    if (summaryDetails) {
-      const bits = [];
-      if (flac > 0) bits.push('FLAC: ' + flac);
-      if (mp3 > 0) bits.push('MP3: ' + mp3);
-      summaryDetails.textContent = bits.join(' · ');
-      summaryDetails.hidden = bits.length === 0;
-    }
-    setClass(summary, 'error', stopped || failed > 0);
-    if (summaryIconUse) {
-      summaryIconUse.setAttribute('href', stopped || failed > 0 ? '#icon-alert' : '#icon-check');
-    }
-    hide(summary, false);
-    const errorState = !stopped && failed > 0 && ok === 0 && skip === 0;
-    setState(errorState ? 'error' : 'done');
-    if (errorState) {
-      showError(
-        'Не удалось скачать. Подробности — в «Подробностях».',
-        jobIsQuality ? '' : lastLink
-      );
-    }
-    announce(title + '. Готово ' + ok + ', пропущено ' + skip + ', ошибок ' + failed + '.');
-  }
-
-  function handleJobStart(title, count) {
-    jobIsQuality = /обновление\s+flac/i.test(title || '');
-    jobReset(title, count);
-    setBusyUi(true);
-    if (jobIsQuality) {
-      if (bgBannerText) bgBannerText.textContent = 'Обновление FLAC: можно остановить в любой момент';
-      hide(bgBanner, false);
-    }
-  }
-
-  function handleJobEnd(ok, skip, error, stopped) {
-    job.ended = true;
-    job.result = { ok, skip, failed: error, stopped: !!stopped };
-    if (!stopped) {
-      for (const s of job.states.values()) s.share = 1;
-    }
-    drawSB();
-    if (job.total > 0) showSummary(ok, skip, error, !!stopped);
-    else setState('idle');
-    setBusyUi(false);
-    if (jobIsQuality) {
-      hide(bgBanner, true);
-      jobIsQuality = false;
-    }
-  }
-
-  events('job-start', handleJobStart);
-  events('job-end', handleJobEnd);
-
-  events('tracks', (items) => trackList(items));
-  events('track-status', (id, status, kind) => trackStatus(id, status, kind));
-  events('progress', (id, label, pct, done, total) => progress(id, label, pct, done, total));
-  events('log', (text, kind) => {
-    line(text, kind);
-    if (kind === 'err') {
-      showError(String(text).replace(/^\[error\]\s*/, ''), lastLink);
+  events('task-added', handleTaskAdded);
+  events('task-updated', handleTaskUpdated);
+  events('task-removed', handleTaskRemoved);
+  events('sources', handleSources);
+  events('queue', handleQueue);
+  events('existing', (trackId) => {
+    showToast('Этот трек уже в очереди — вторая загрузка не создана.');
+    for (const [key, t] of tasks.entries()) {
+      if (t.trackId !== trackId) continue;
+      const row = rowEls.get(key);
+      if (!row) continue;
+      row.classList.add('flash');
+      if (typeof setTimeout === 'function') setTimeout(() => row.classList.remove('flash'), 1200);
     }
   });
+  events('log', (text, kind) => {
+    appendLog(text, kind);
+    if (kind === 'err') showToast(String(text).replace(/^\[error\]\s*/, ''));
+  });
 
-  // --- Preview ---
+  // --- Preview hint ---
   function hidePreview() {
     previewSeq++;
-    hide(preview, true);
-    hide(previewSkeleton, true);
-    hide(previewContent, false);
+    hide(previewHint, true);
     if (previewCover) previewCover.removeAttribute('src');
     if (previewTitle) previewTitle.textContent = '';
     if (previewSub) previewSub.textContent = '';
     if (previewKind) previewKind.textContent = '';
-    if (uiState === 'preview') setState('idle');
-  }
-
-  function showPreviewSkeleton() {
-    hide(preview, false);
-    hide(previewSkeleton, false);
-    hide(previewContent, true);
-    setState('preview');
   }
 
   function showPreview(p) {
+    if (!previewHint) return;
     if (previewKind) {
       previewKind.textContent = p.Kind === 'album' ? 'Альбом' : p.Kind === 'playlist' ? 'Плейлист' : 'Трек';
     }
@@ -687,10 +773,7 @@
         previewCoverFallback.hidden = false;
       }
     }
-    hide(previewSkeleton, true);
-    hide(previewContent, false);
-    hide(preview, false);
-    setState('preview');
+    hide(previewHint, false);
   }
 
   async function updatePreview() {
@@ -700,7 +783,6 @@
       return;
     }
     const seq = ++previewSeq;
-    showPreviewSkeleton();
     try {
       const p = await callApp('PreviewLink', link);
       if (seq !== previewSeq) return;
@@ -714,108 +796,70 @@
     }
   }
 
+  function clearPreviewTimer() {
+    if (typeof clearTimeout === 'function') clearTimeout(previewTimer);
+  }
+
+  function schedulePreview() {
+    if (typeof setTimeout !== 'function') return;
+    previewTimer = setTimeout(updatePreview, 500);
+  }
+
+  function linkList() {
+    const value = input ? input.value : '';
+    return value.trim() ? value.trim().split(/\s+/).filter(Boolean) : [];
+  }
+
   function updateInputChrome() {
     const value = input ? input.value : '';
-    const links = value.trim() ? value.trim().split(/\s+/).filter(Boolean) : [];
+    const links = linkList();
     if (clearBtn) clearBtn.hidden = value.length === 0;
     if (multiHint) {
       multiHint.textContent = links.length > 1
-        ? links.length + ' ' + plural(links.length, 'ссылка', 'ссылки', 'ссылок')
+        ? links.length + ' ' + PLURAL(links.length, 'ссылка', 'ссылки', 'ссылок')
         : '';
       multiHint.hidden = links.length <= 1;
     }
+    if (links.length > 1) hidePreview();
     return links;
   }
 
-  function clearError() {
-    hide(errorBanner, true);
-    if (errorText) errorText.textContent = '';
-  }
-
-  function showError(message, link) {
-    if (!errorBanner) return;
-    const text = message || 'Неизвестная ошибка';
-    if (errorText) errorText.textContent = text;
-    if (retryBtn) retryBtn.hidden = !link;
-    if (summaryTitle) summaryTitle.textContent = 'Ошибка';
-    if (summaryText) summaryText.textContent = text;
-    if (summaryDetails) {
-      summaryDetails.textContent = '';
-      summaryDetails.hidden = true;
-    }
-    if (summaryIconUse) summaryIconUse.setAttribute('href', '#icon-alert');
-    setClass(summary, 'error', true);
-    hide(errorBanner, false);
-    setState('error');
-  }
-
-  // --- Download button ---
-  async function startDownload() {
-    if (busy) return;
-    const link = input ? input.value.trim() : '';
-    if (!link) return;
-    lastLink = link;
+  // --- Submit ---
+  async function submitQueue() {
+    const raw = input ? input.value.trim() : '';
+    if (!raw) return;
     clearPreviewTimer();
-    hidePreview();
-    clearError();
-    if (input) input.value = '';
-    if (clearBtn) clearBtn.hidden = true;
-    if (multiHint) multiHint.hidden = true;
-    if (input) input.focus();
-    setBusyUi(true);
     try {
-      const res = await callApp('Download', link);
+      const res = await callApp('Submit', raw);
       if (res) {
-        const kind = res.startsWith('[done]') ? 'done'
-          : res.startsWith('[error]') ? 'err'
-            : res.startsWith('[stopped]') ? 'stopped' : 'info';
-        line(res, kind);
-        if (res.startsWith('[error]')) {
-          showError(res.replace(/^\[error\]\s*/, ''), lastLink);
-        }
+        appendLog(res, res.indexOf('[error]') === 0 ? 'err' : 'info');
+        showToast(String(res).replace(/^\[error\]\s*/, ''));
+        return;
       }
+      lastSubmit = raw;
+      if (input) input.value = '';
+      updateInputChrome();
+      hidePreview();
+      if (input) input.focus();
     } catch (e) {
-      const message = String(e);
-      line('[error] ' + message, 'err');
-      showError(message, lastLink);
-    }
-    setBusyUi(false);
-  }
-
-  async function stopDownload() {
-    if (!busy) return;
-    if (btn) btn.disabled = true;
-    if (dlLabel) dlLabel.textContent = 'Останавливаю…';
-    try {
-      await callApp('Stop');
-    } catch (e) {
-      line('[error] ' + e, 'err');
-      if (btn) btn.disabled = false;
-      if (dlLabel) dlLabel.textContent = 'Остановить';
+      appendLog('[error] ' + e, 'err');
+      showToast(String(e));
     }
   }
 
-  if (btn) {
-    btn.onclick = async () => {
-      if (busy) await stopDownload();
-      else await startDownload();
-    };
-  }
+  if (btn) btn.onclick = () => submitQueue();
 
   if (input) {
-    input.addEventListener('keyup', (e) => {
+    input.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter' || e.isComposing) return;
-      startDownload();
+      e.preventDefault();
+      submitQueue();
     });
     input.addEventListener('input', () => {
       const links = updateInputChrome();
-      clearError();
       clearPreviewTimer();
-      if (links.length === 1) {
-        schedulePreview();
-      } else {
-        hidePreview();
-      }
+      if (links.length === 1) schedulePreview();
+      else hidePreview();
     });
   }
 
@@ -826,7 +870,6 @@
       input.focus();
       updateInputChrome();
       hidePreview();
-      clearError();
     };
   }
 
@@ -843,13 +886,26 @@
         if (!text) return;
         if (input) input.value = text;
         updateInputChrome();
-        input.focus();
+        if (input) input.focus();
         await updatePreview();
       } catch (e) {
-        line('[error] не удалось прочитать буфер обмена: ' + e, 'err');
+        appendLog('[error] не удалось прочитать буфер обмена: ' + e, 'err');
       }
     };
   }
+
+  async function openFolder() {
+    try {
+      await callApp('OpenOutputDir');
+    } catch (e) {
+      appendLog('[error] ' + e, 'err');
+      showToast(String(e));
+    }
+  }
+  if (openFolderBtn) openFolderBtn.onclick = openFolder;
+
+  if (qStopAll) qStopAll.onclick = () => call('CancelAll');
+  if (qClear) qClear.onclick = () => call('ClearFinished');
 
   // --- Drag & Drop ---
   function useDroppedLink(e) {
@@ -889,39 +945,9 @@
     });
   }
 
-  // --- Folder / summary ---
-  async function openFolder() {
-    try {
-      await callApp('OpenOutputDir');
-    } catch (e) {
-      line('[error] ' + e, 'err');
-      showError(String(e), '');
-    }
-  }
-  if (openFolderBtn) openFolderBtn.onclick = openFolder;
-  if (summaryOpen) summaryOpen.onclick = openFolder;
-  if (summaryAgain) {
-    summaryAgain.onclick = () => {
-      if (input) input.focus();
-      setState('idle');
-      clearError();
-    };
-  }
-  if (retryBtn) {
-    retryBtn.onclick = () => {
-      if (!lastLink || !input) return;
-      input.value = lastLink;
-      input.focus();
-      updateInputChrome();
-      clearError();
-      startDownload();
-    };
-  }
-  if (errorClose) errorClose.onclick = clearError;
-
-  if (details) {
-    details.addEventListener('toggle', () => {
-      if (details.open && log && typeof log.scrollHeight === 'number') {
+  if (journal) {
+    journal.addEventListener('toggle', () => {
+      if (journal.open && log && typeof log.scrollHeight === 'number') {
         log.scrollTop = log.scrollHeight;
       }
     });
@@ -942,15 +968,14 @@
           logCopy.title = 'Скопировано';
         }
       } catch (e) {
-        line('[error] не удалось скопировать лог: ' + e, 'err');
+        appendLog('[error] не удалось скопировать лог: ' + e, 'err');
       }
     };
   }
 
   // --- Quality monitor ---
   function setQualityStatus(text) {
-    const value = text || 'FLAC: проверок не было';
-    if (sQualityStatus) sQualityStatus.textContent = value;
+    if (sQualityStatus) sQualityStatus.textContent = text || 'FLAC: проверок не было';
   }
 
   function syncQualityOpen(n) {
@@ -981,6 +1006,7 @@
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = !!it.selected;
+    if (!cb.dataset) cb.dataset = {};
     cb.dataset.key = it.key;
     const main = document.createElement('span');
     main.className = 'qmain';
@@ -1098,7 +1124,7 @@
       undo.type = 'button';
       undo.className = 'btn btn-secondary btn-sm';
       undo.textContent = 'Вернуть';
-      undo.disabled = qualityChecking || busy;
+      undo.disabled = qualityChecking;
       undo.onclick = () => undoRejected(it);
       row.appendChild(main);
       row.appendChild(undo);
@@ -1144,7 +1170,7 @@
     const ids = qualityItems.filter((x) => x.matchSource === 'id' || x.alreadyFlac).length;
     const searches = qualityItems.length - ids;
     let text = 'Найдено ' + qualityItems.length + ' ' +
-      plural(qualityItems.length, 'трек', 'трека', 'треков') + ' в лучшем качестве.';
+      PLURAL(qualityItems.length, 'трек', 'трека', 'треков') + ' в лучшем качестве.';
     if (searches > 0) {
       text += ' Из них ' + searches + ' — по названию, проверь совпадения.';
     }
@@ -1229,9 +1255,10 @@
       if (settingsOpen) closeSettings(true);
       try {
         await callApp('DownloadFound', selected);
+        showToast('Обновление добавлено в очередь.');
       } catch (e) {
-        line('[error] ' + e, 'err');
-        showError(String(e), '');
+        appendLog('[error] ' + e, 'err');
+        showToast(String(e));
       }
     };
   }
@@ -1252,7 +1279,7 @@
           renderQuality(items);
           if (qualityItems.length > 0) openQuality();
         })
-        .catch((e) => line('[error] ' + e, 'err'));
+        .catch((e) => appendLog('[error] ' + e, 'err'));
     };
   }
 
@@ -1268,7 +1295,7 @@
   });
   events('quality-check-finished', (text, found, err, pending) => {
     qualityChecking = false;
-    if (sCheckNow) sCheckNow.disabled = busy;
+    if (sCheckNow) sCheckNow.disabled = false;
     setQualityStatus(text || 'FLAC: проверка завершена');
     updateQualityBadge(pending || 0);
     if (err && sQualityStatus) sQualityStatus.title = err;
@@ -1294,57 +1321,6 @@
       // Бэкенд может быть ещё не готов при первом кадре.
     }
   }
-
-  // --- Duplicate dialog ---
-  function openDup(p) {
-    if (!dupOverlay) return;
-    if (dupPercent) dupPercent.textContent = p.percent + '%';
-    if (dupTrack) dupTrack.textContent = p.track || '';
-    if (dupMatchName) dupMatchName.textContent = p.fileName || '';
-    if (dupMatchPath) {
-      dupMatchPath.textContent = p.filePath || '';
-      dupMatchPath.title = p.filePath || '';
-    }
-    if (dupFormat) {
-      dupFormat.hidden = !p.differentFormat;
-      if (p.differentFormat) {
-        dupFormat.textContent = 'Найденный файл в формате ' +
-          String(p.fileExt || '').toUpperCase() +
-          ' — может получиться один трек в двух форматах.';
-      }
-    }
-    dupOpen = true;
-    dupOverlay.classList.add('open');
-    dupOverlay.setAttribute('aria-hidden', 'false');
-    activeModal = 'dup';
-    if (dupNo) dupNo.focus();
-  }
-
-  function closeDup() {
-    if (!dupOverlay || !dupOpen) return;
-    dupOpen = false;
-    dupOverlay.classList.remove('open');
-    dupOverlay.setAttribute('aria-hidden', 'true');
-    activeModal = null;
-    if (input) input.focus();
-  }
-
-  async function answerDup(accept) {
-    if (!dupOpen) return;
-    closeDup();
-    try {
-      await callApp('AnswerDuplicate', accept);
-    } catch (e) {
-      line('[error] ' + e, 'err');
-    }
-  }
-
-  if (dupYes) dupYes.onclick = () => answerDup(true);
-  if (dupNo) dupNo.onclick = () => answerDup(false);
-  if (dupOverlay) {
-    dupOverlay.onclick = (e) => { if (e.target === dupOverlay) answerDup(false); };
-  }
-  events('duplicate-prompt', (p) => openDup(p));
 
   // --- Settings ---
   function settingsSnapshotValue() {
@@ -1384,7 +1360,6 @@
     if (!Number.isFinite(v)) v = 1;
     v = Math.min(10, Math.max(1, Math.round(v) + delta));
     sWorkers.value = v;
-    settingsSnapshot = settingsSnapshot === null ? null : settingsSnapshot;
   }
 
   if (sDiffOutput) sDiffOutput.addEventListener('change', syncOutputField);
@@ -1402,7 +1377,7 @@
   if (sToken) sToken.addEventListener('input', syncTokenHint);
 
   function openSettings() {
-    if (!settingsOverlay || busy) return;
+    if (!settingsOverlay) return;
     if (settingsError) settingsError.textContent = '';
     callApp('GetSettings').then((s) => {
       if (sToken) sToken.value = s.Token || '';
@@ -1422,13 +1397,13 @@
       if (sQualityStatus) sQualityStatus.textContent = s.QualityText || 'FLAC: проверок не было';
       qualityOutputDir = s.OutputDir || qualityOutputDir;
       qualityChecking = !!s.QualityChecking;
-      if (sCheckNow) sCheckNow.disabled = qualityChecking || busy;
+      if (sCheckNow) sCheckNow.disabled = qualityChecking;
       renderRejectedList(s.QualityRejected || []);
       updateQualityBadge(s.QualityPending || 0);
       if (s.QualityPending > 0 && qualityItems.length === 0) {
         callApp('PendingFound')
           .then((items) => renderQuality(items))
-          .catch((e) => line('[error] ' + e, 'err'));
+          .catch((e) => appendLog('[error] ' + e, 'err'));
       }
       syncSubdirTemplate();
       syncTokenHint();
@@ -1442,7 +1417,8 @@
       activeModal = 'settings';
       if (sToken) sToken.focus();
     }).catch((e) => {
-      line('[error] ' + e, 'err');
+      appendLog('[error] ' + e, 'err');
+      showToast(String(e));
     });
   }
 
@@ -1551,14 +1527,14 @@
   if (sCheckNow) {
     sCheckNow.onclick = async () => {
       if (settingsError) settingsError.textContent = '';
-      if (sCheckNow) sCheckNow.disabled = true;
+      sCheckNow.disabled = true;
       try {
         await checkQualityNow();
       } catch (e) {
-        line('[error] ' + e, 'err');
+        appendLog('[error] ' + e, 'err');
         if (settingsError) settingsError.textContent = String(e);
       } finally {
-        if (sCheckNow) sCheckNow.disabled = qualityChecking || busy;
+        sCheckNow.disabled = qualityChecking;
       }
     };
   }
@@ -1597,7 +1573,8 @@
           FlacMonitor: sFlacMonitor ? sFlacMonitor.checked : false,
         });
         closeSettings(true);
-        line('[done] настройки сохранены', 'done');
+        appendLog('[done] настройки сохранены', 'done');
+        showToast('Настройки сохранены. Новые задачи возьмут новые значения.');
       } catch (e) {
         if (settingsError) settingsError.textContent = String(e);
       }
@@ -1650,7 +1627,6 @@
       case 'settings': return settingsCard;
       case 'tokenHelp': return tokenHelpCard;
       case 'quality': return qualityCard;
-      case 'dup': return dupCard;
       case 'confirm': return confirmCard;
       default: return null;
     }
@@ -1707,16 +1683,29 @@
     } else if (activeModal === 'quality') {
       e.preventDefault();
       closeQuality();
-    } else if (activeModal === 'dup') {
-      e.preventDefault();
-      answerDup(false);
     } else if (activeModal === 'confirm') {
       e.preventDefault();
       closeConfirm();
     }
   }
   document.addEventListener('keydown', onKeyDown);
-  events('window-shown', () => { startBoot(); if (input) input.focus(); });
+  events('window-shown', () => {
+    startBoot();
+    refreshQueue();
+    if (input) input.focus();
+  });
+
+  // --- Queue bootstrap ---
+  function refreshQueue() {
+    callApp('GetQueue')
+      .then((snap) => {
+        queueReady = true;
+        syncSnapshot(snap);
+      })
+      .catch(() => {
+        // The backend may still be starting; the first queue event fills the UI.
+      });
+  }
 
   // --- Init ---
   if (boot) {
@@ -1740,43 +1729,45 @@
   updateInputChrome();
   updateLogBadge();
   setQualityStatus('FLAC: проверок не было');
-  setState('idle');
+  applyState(null);
   if (input) input.focus();
   loadQualityStatus();
+  refreshQueue();
+  if (typeof setTimeout === 'function') {
+    setTimeout(() => { if (!queueReady) refreshQueue(); }, 600);
+  }
 
-  // Небольшой тестовый/диагностический API: стенд tests/statusbar_check.js
-  // исполняет этот файл в VM и проверяет состояние без глобального мусора.
+  // Тестовый/диагностический API: стенд tests/queue_check.js исполняет этот
+  // файл в VM и проверяет состояние без глобального мусора.
   window.__yamdl = {
-    getState: () => uiState,
-    isBusy: () => busy,
+    getState: () => stateName,
     isBootDismissed: () => bootDismissed,
-    parseTrackStatus,
-    startDownload,
-    stopDownload,
+    getTasks: () => Array.from(tasks.values()),
+    getSnapshot: () => snapshot,
+    getLastSubmit: () => lastSubmit,
+    submit: submitQueue,
+    stateText,
+    handleTaskAdded,
+    handleTaskUpdated,
+    handleTaskRemoved,
+    handleSources,
+    handleQueue,
+    appendLog,
+    setFilter: (key) => { filterSource = key || ''; renderSources(); applyFilter(); },
+    getFilter: () => filterSource,
+    openSettings,
     closeSettings,
     isDirty,
-    answerDup,
-    openSettings,
-    closeQuality,
-    openQuality,
     openConfirm,
     closeConfirm,
+    openQuality,
+    closeQuality,
     renderQuality,
     renderRejectedList,
     rejectQualityItem,
     undoRejected,
-    getLastLink: () => lastLink,
     getQualityItems: () => qualityItems,
     getRejectedItems: () => rejectedItems,
-    jobReset,
-    handleJobStart,
-    handleJobEnd,
-    trackList,
-    trackStatus,
-    progress,
-    showSummary,
-    setState,
-    setBusyUi,
-    showError,
+    showToast,
   };
 })();

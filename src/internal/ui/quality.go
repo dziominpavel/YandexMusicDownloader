@@ -9,6 +9,7 @@ import (
 
 	"yamdl/internal/downloader"
 	"yamdl/internal/quality"
+	"yamdl/internal/queue"
 )
 
 // QualityStatusView is the status line shown in the settings window.
@@ -72,11 +73,12 @@ func (a *App) qualityOpts() quality.FormatOptions {
 }
 
 func (a *App) qualityChecker() *quality.Checker {
-	if a.index == nil || a.client == nil || a.qualityJournal == nil {
+	c := a.clientSnapshot()
+	if a.index == nil || c == nil || a.qualityJournal == nil {
 		return nil
 	}
 	return &quality.Checker{
-		Index: a.index, Prober: a.client, Searcher: a.client, Journal: a.qualityJournal,
+		Index: a.index, Prober: c, Searcher: c, Journal: a.qualityJournal,
 		Log:        func(s string) { a.log(s, "info") },
 		Throttle:   200 * time.Millisecond,
 		ConvertM4A: a.cfg.ConvertM4A,
@@ -84,14 +86,11 @@ func (a *App) qualityChecker() *quality.Checker {
 	}
 }
 
-// CheckQuality runs the manual check. It is read-only and does not turn
-// the main button into «Остановить».
+// CheckQuality runs the manual check. It is read-only and does not touch
+// the download queue: checks and downloads may run at the same time.
 func (a *App) CheckQuality() (quality.Result, error) {
-	if a.client == nil {
+	if a.clientSnapshot() == nil {
 		return quality.Result{}, fmt.Errorf("нет токена: проверка FLAC недоступна")
-	}
-	if a.isBusy() {
-		return quality.Result{}, fmt.Errorf("идёт скачивание — проверка недоступна")
 	}
 	if a.isChecking() {
 		return quality.Result{}, fmt.Errorf("проверка уже идёт")
@@ -100,7 +99,7 @@ func (a *App) CheckQuality() (quality.Result, error) {
 }
 
 func (a *App) runQualityCheck() (quality.Result, error) {
-	if a.client == nil {
+	if a.clientSnapshot() == nil {
 		return quality.Result{}, fmt.Errorf("нет токена: проверка FLAC недоступна")
 	}
 	chk := a.qualityChecker()
@@ -157,10 +156,10 @@ func (a *App) runQualityCheck() (quality.Result, error) {
 }
 
 func (a *App) maybeAutoCheck() {
-	if !a.cfg.FlacMonitor || a.client == nil || a.index == nil || a.qualityJournal == nil {
+	if !a.cfg.FlacMonitor || a.clientSnapshot() == nil || a.index == nil || a.qualityJournal == nil {
 		return
 	}
-	if a.isBusy() || a.isChecking() {
+	if a.isChecking() {
 		return
 	}
 	if !a.qualityJournal.DueCheck(time.Now()) {
@@ -227,9 +226,6 @@ func (a *App) PendingFound() []quality.FoundItem {
 // touched: its lossless check entry is removed so the next check can look
 // for another version.
 func (a *App) RejectFound(item quality.FoundItem) ([]quality.FoundItem, error) {
-	if a.isBusy() {
-		return nil, fmt.Errorf("идёт скачивание — отклонение недоступно")
-	}
 	if a.qualityJournal == nil {
 		return nil, fmt.Errorf("журнал проверок недоступен")
 	}
@@ -278,9 +274,6 @@ func (a *App) RejectFound(item quality.FoundItem) ([]quality.FoundItem, error) {
 // the original lossless offer is restored immediately without a network
 // call; otherwise the next check will find it again.
 func (a *App) UndoReject(path, trackID string) ([]quality.FoundItem, error) {
-	if a.isBusy() {
-		return nil, fmt.Errorf("идёт скачивание — возврат недоступен")
-	}
 	if a.qualityJournal == nil {
 		return nil, fmt.Errorf("журнал проверок недоступен")
 	}
@@ -357,50 +350,27 @@ func declinedCandidate(d quality.Declined) string {
 	return label
 }
 
-// DownloadFound runs the selected upgrades as a normal stoppable job.
+// DownloadFound enqueues the selected upgrades as tasks of the
+// «Обновление FLAC» source. The queue owns the pool, cancellation and the
+// rows; the upgrader only owns one item at a time.
 func (a *App) DownloadFound(items []quality.FoundItem) error {
 	if len(items) == 0 {
 		return fmt.Errorf("ничего не выбрано")
 	}
-	if a.isBusy() {
-		return fmt.Errorf("идёт скачивание — обновление недоступно")
-	}
-	if a.client == nil {
+	if a.clientSnapshot() == nil {
 		return fmt.Errorf("нет токена: обновление недоступно")
 	}
 	a.cancelQualityCheck()
-	a.setBusy(true)
-	defer a.setBusy(false)
 
-	a.client.StartJob()
-	a.jobStart("Обновление FLAC", len(items))
-	tracks := make([]*downloader.Track, 0, len(items))
+	entries := make([]queue.Entry, 0, len(items))
 	for _, it := range items {
-		tracks = append(tracks, &downloader.Track{ID: it.Key, Title: it.Label})
+		label := strings.TrimSpace(it.Label)
+		if label == "" {
+			label = strings.TrimSpace(it.FileName)
+		}
+		entries = append(entries, queue.Entry{TrackID: it.Key, Label: label, Item: it})
 	}
-	a.trackRows(tracks)
-
-	up := &quality.Upgrader{
-		Client: a.client, Upgrade: a.client.Upgrade, Index: a.index,
-		Journal: a.qualityJournal, LibraryDir: a.cfg.LibraryDir, OutputDir: a.outputDir,
-		Workers: 2, Log: func(s string) { a.log(s, "info") },
-	}
-	sum := up.Run(items, func(e downloader.Event) {
-		text, kind := formatEvent(e)
-		a.log(text, kind)
-		status, skind := formatTrackStatus(e)
-		a.trackStatus(e.TrackID, status, skind)
-	}, func(p downloader.Progress) {
-		a.progress(p)
-	})
-
-	stopped := sum.Stopped > 0 || a.stopRequested()
-	a.jobEnd(sum.OK, sum.Skipped, sum.Failed, stopped)
-	if stopped {
-		a.log(fmt.Sprintf("[stopped] обновление: %d ok, %d skip, %d error", sum.OK, sum.Skipped, sum.Failed), "stopped")
-	} else {
-		a.log(fmt.Sprintf("[finished] %d ok, %d skip, %d error", sum.OK, sum.Skipped, sum.Failed), "info")
-	}
+	a.ensureQueue().SubmitTasks("Обновление FLAC", fmt.Sprintf("[flac] обновление: %d треков", len(items)), "upgrade", entries)
 
 	// Unchecked search matches are explicit rejections; unchecked ID
 	// matches stay pending for the next time.

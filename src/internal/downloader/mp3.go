@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/xml"
@@ -28,8 +29,13 @@ type downloadInfoResult struct {
 
 // downloadOptions fetches all audio source options for a track.
 func (c *Client) downloadOptions(trackID string) ([]DownloadInfo, error) {
+	return c.downloadOptionsCtx(c.reqCtx(), trackID)
+}
+
+// downloadOptionsCtx is downloadOptions with an explicit context.
+func (c *Client) downloadOptionsCtx(ctx context.Context, trackID string) ([]DownloadInfo, error) {
 	var data downloadInfoResult
-	if err := c.get(apiBase+"/tracks/"+trackID+"/download-info", &data); err != nil {
+	if err := c.getCtx(ctx, apiBase+"/tracks/"+trackID+"/download-info", &data); err != nil {
 		return nil, err
 	}
 	return data.Result, nil
@@ -54,7 +60,12 @@ type directLinkXML struct {
 
 // directLink resolves a downloadInfoUrl into a time-limited direct file URL.
 func (c *Client) directLink(infoURL string) (string, error) {
-	req, err := c.newRequest(http.MethodGet, infoURL)
+	return c.directLinkCtx(c.reqCtx(), infoURL)
+}
+
+// directLinkCtx is directLink with an explicit context.
+func (c *Client) directLinkCtx(ctx context.Context, infoURL string) (string, error) {
+	req, err := c.newRequestWithContext(ctx, http.MethodGet, infoURL)
 	if err != nil {
 		return "", err
 	}
@@ -87,19 +98,25 @@ func (c *Client) DownloadMP3(trackID, outputDir string, emit func(Event)) (dest 
 
 // DownloadMP3WithProgress is DownloadMP3 with live byte progress.
 func (c *Client) DownloadMP3WithProgress(trackID, outputDir string, emit func(Event), onProgress ProgressFunc) (dest string, err error) {
+	ctx := c.reqCtx()
 	track, err := c.fetchTrack(trackID)
 	if err != nil {
 		emitEvent(emit, Event{Kind: KindFailed, Label: trackID, TrackID: trackID, Detail: err.Error()})
 		return "", err
 	}
-	return c.downloadMP3Track(track, outputDir, emit, onProgress)
+	return c.downloadMP3TrackCtx(ctx, track, outputDir, emit, onProgress)
 }
 
 // downloadMP3Track runs the MP3 pipeline for an already-resolved track.
 func (c *Client) downloadMP3Track(track *Track, outputDir string, emit func(Event), onProgress ProgressFunc) (dest string, err error) {
+	return c.downloadMP3TrackCtx(c.reqCtx(), track, outputDir, emit, onProgress)
+}
+
+// downloadMP3TrackCtx runs the MP3 pipeline for one task context.
+func (c *Client) downloadMP3TrackCtx(ctx context.Context, track *Track, outputDir string, emit func(Event), onProgress ProgressFunc) (dest string, err error) {
 	trackID := track.ID
 	label := track.Label()
-	if c.Stopped() {
+	if ctx.Err() != nil {
 		emitEvent(emit, Event{Kind: KindStopped, Label: label, TrackID: trackID})
 		return "", ErrStopped
 	}
@@ -110,7 +127,7 @@ func (c *Client) downloadMP3Track(track *Track, outputDir string, emit func(Even
 			emitEvent(emit, Event{Kind: KindDone, Label: label, TrackID: trackID, Format: "MP3"})
 		case errors.Is(err, ErrAlreadyExists):
 			emitEvent(emit, Event{Kind: KindSkipped, Label: label, TrackID: trackID, Detail: dest})
-		case errors.Is(err, ErrStopped) || c.Stopped():
+		case errors.Is(err, ErrStopped) || ctx.Err() != nil:
 			err = ErrStopped
 			emitEvent(emit, Event{Kind: KindStopped, Label: label, TrackID: trackID})
 		default:
@@ -123,7 +140,7 @@ func (c *Client) downloadMP3Track(track *Track, outputDir string, emit func(Even
 		return dest, fmt.Errorf("%w: %s", ErrAlreadyExists, dest)
 	}
 
-	opts, err := c.downloadOptions(trackID)
+	opts, err := c.downloadOptionsCtx(ctx, trackID)
 	if err != nil {
 		return "", err
 	}
@@ -131,16 +148,16 @@ func (c *Client) downloadMP3Track(track *Track, outputDir string, emit func(Even
 	if err != nil {
 		return "", err
 	}
-	link, err := c.directLink(best.DownloadInfoURL)
+	link, err := c.directLinkCtx(ctx, best.DownloadInfoURL)
 	if err != nil {
 		return "", err
 	}
-	tmp, err := c.downloadToTemp(link, outputDir, ".mp3", track.ID, label, onProgress)
+	tmp, err := c.downloadToTempCtx(ctx, link, outputDir, ".mp3", track.ID, label, onProgress)
 	if err != nil {
 		return "", err
 	}
 	defer os.Remove(tmp) // no-op after successful publish
-	if err = c.prepareAndTag(tmp, track); err != nil {
+	if err = c.prepareAndTagCtx(ctx, tmp, track); err != nil {
 		return "", err
 	}
 	if err = publishTemp(tmp, dest); err != nil {
@@ -154,6 +171,11 @@ func (c *Client) downloadMP3Track(track *Track, outputDir string, emit func(Even
 // ext so format dispatch (tagging) works before publish. No full file in RAM.
 // Received bytes are reported via onProgress (nil = silent).
 func (c *Client) downloadToTemp(url, dir, ext, trackID, label string, onProgress ProgressFunc) (string, error) {
+	return c.downloadToTempCtx(c.reqCtx(), url, dir, ext, trackID, label, onProgress)
+}
+
+// downloadToTempCtx is downloadToTemp with an explicit context.
+func (c *Client) downloadToTempCtx(ctx context.Context, url, dir, ext, trackID, label string, onProgress ProgressFunc) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("downloader: mkdir: %w", err)
 	}
@@ -163,7 +185,7 @@ func (c *Client) downloadToTemp(url, dir, ext, trackID, label string, onProgress
 	}
 	tmpName := tmp.Name()
 
-	req, err := c.newRequest(http.MethodGet, url)
+	req, err := c.newRequestWithContext(ctx, http.MethodGet, url)
 	if err != nil {
 		tmp.Close()
 		os.Remove(tmpName)

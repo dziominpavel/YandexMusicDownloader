@@ -193,7 +193,7 @@ const tick = () => new Promise((r) => setImmediate(r));
   registry['sCheckNow'].onclick();
   check('форма не закрылась сразу', wasOpen && registry['settingsOverlay'].classList.contains('open'));
   check('кнопка проверки заблокирована на время', registry['sCheckNow'].disabled === true);
-  await tick();
+  await new Promise((r) => setTimeout(r, 10));
   await tick();
   check('форма не закрылась после проверки', registry['settingsOverlay'].classList.contains('open'));
   check('статус показывает результат', String(registry['sQualityStatus'].textContent).includes('ничего не найдено'));

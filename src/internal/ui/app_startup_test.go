@@ -85,11 +85,11 @@ func TestVerifyStartupTokenIgnoresStaleResult(t *testing.T) {
 	}
 }
 
-func TestDownloadRejectsInvalidToken(t *testing.T) {
+func TestSubmitRejectsInvalidToken(t *testing.T) {
 	a := &App{authErr: "токен НЕ принят: http 401"}
-	got := a.Download("https://music.yandex.ru/track/1")
+	got := a.Submit("https://music.yandex.ru/track/1")
 	if got != "[error] токен НЕ принят: http 401" {
-		t.Fatalf("unexpected download result: %q", got)
+		t.Fatalf("unexpected submit result: %q", got)
 	}
 }
 

@@ -1,5 +1,6 @@
-// Package ui is the desktop window backend: it wires config, resolver
-// and downloader together and streams log events to the frontend.
+// Package ui is the desktop window backend: it wires config, resolver,
+// the download queue and the quality monitor together and streams events
+// to the frontend.
 package ui
 
 import (
@@ -22,6 +23,7 @@ import (
 	"yamdl/internal/downloader"
 	"yamdl/internal/library"
 	"yamdl/internal/quality"
+	"yamdl/internal/queue"
 	"yamdl/internal/resolver"
 	"yamdl/internal/tagger"
 )
@@ -29,73 +31,54 @@ import (
 // App is bound to the frontend (window.go.main.App).
 type App struct {
 	ctx       context.Context
+	mu        sync.Mutex
 	client    *downloader.Client
 	outputDir string
 	ready     string // startup status line
-	mu        sync.Mutex
 
 	// index is the collection index; nil means it is not built at all.
-	// It can exist for the FLAC monitor even when LIBRARY_DIR is empty.
 	index *library.Index
-	// duplicatesEnabled is true only when LIBRARY_DIR is set and valid;
-	// the presence of an index alone (FLAC monitor) must not turn on
-	// duplicate dialogs.
+	// duplicatesEnabled is true only when LIBRARY_DIR is set and valid.
 	duplicatesEnabled bool
 	// readyNote is logged right after the startup status line.
 	readyNote string
-	// confirmDuplicate asks the user about a probable duplicate; nil =
-	// the in-window duplicate dialog. Tests substitute it.
-	confirmDuplicate func(duplicatePrompt) bool
-	// dupMu guards dupReply, the pending answer channel of the open
-	// in-window duplicate dialog (only one prompt at a time).
-	dupMu    sync.Mutex
-	dupReply chan bool
 	// logSink, when set, captures log lines instead of emitting events.
 	logSink func(text, kind string)
-	// eventSink, when set, captures named frontend events (job-start,
-	// job-end, progress, track-status, tracks) instead of emitting them.
+	// eventSink, when set, captures named frontend events instead of emitting.
 	eventSink func(name string, args ...any)
-	// busy marks an active Download call so settings stay locked.
-	busy bool
-	// downloadOne runs the single-track pipeline; nil means
-	// client.DownloadTrack. Tests substitute it (same pattern as
-	// downloader.Client.downloadOne).
-	downloadOne func(*downloader.Track, string, func(downloader.Event), downloader.ProgressFunc) error
-	// downloadBatch runs the playlist pool; nil means
-	// client.DownloadPlaylist. Tests substitute it (the pool itself is
-	// covered by downloader tests).
-	downloadBatch func([]*downloader.Track, string, func(downloader.Event), downloader.ProgressFunc) downloader.Summary
-	// fetchPlaylist resolves a playlist UUID; nil means client.Playlist.
-	// Tests substitute it.
-	fetchPlaylist func(string) (*downloader.Playlist, error)
-	// envPath is the .env file the settings window edits (empty when
-	// the executable path is unresolvable).
+	// envPath is the .env file the settings window edits.
 	envPath string
-	// cfg is the last applied configuration; source for GetSettings.
+	// cfg is the last applied configuration.
 	cfg config.Config
-	// validateToken checks a token against account/status. Tests replace it
-	// so startup never touches the network.
+	// validateToken checks a token against account/status.
 	validateToken func(string) (string, error)
 	// tokenGen invalidates an in-flight startup check when settings are saved.
-	// Guarded by mu.
 	tokenGen int
-	// authErr is the last startup token error; empty when the token is valid
-	// or the check has not finished yet. Guarded by mu.
+	// authErr is the last startup token error.
 	authErr string
 	// logFile is the diagnostic file log; nil means file logging is off.
 	logFile *applog.Logger
-	// logFileErr explains why file logging is off (nil when it works).
+	// logFileErr explains why file logging is off.
 	logFileErr error
 
-	// qualityJournal is the persistent FLAC-monitor cache; nil when the
-	// .env path is unknown.
+	// qualityJournal is the persistent FLAC-monitor cache.
 	qualityJournal *quality.Journal
 	qualityPath    string
-	// qualityMu guards checking, checkCancel and found.
-	qualityMu   sync.Mutex
-	checking    bool
-	checkCancel context.CancelFunc
-	found       []quality.FoundItem
+	qualityMu      sync.Mutex
+	checking       bool
+	checkCancel    context.CancelFunc
+	found          []quality.FoundItem
+
+	// q is the download queue: the single owner of download state.
+	q *queue.Manager
+	// exported marks sources whose .m3u was already written.
+	exported map[string]bool
+
+	// resolveHook, downloadHook and duplicateHook are test seams for the
+	// queue; nil means the real implementations below.
+	resolveHook   queue.ResolveFunc
+	downloadHook  queue.DownloadFunc
+	duplicateHook queue.DuplicateFunc
 }
 
 // SetLogFile attaches the diagnostic file log. Called by main before the
@@ -104,15 +87,14 @@ func (a *App) SetLogFile(l *applog.Logger) {
 	a.logFile = l
 }
 
-// SetLogFileError remembers why the diagnostic log could not be opened,
-// so Startup can tell the user in the window.
+// SetLogFileError remembers why the diagnostic log could not be opened.
 func (a *App) SetLogFileError(err error) {
 	a.logFileErr = err
 }
 
-// NewApp loads config and prepares the downloader. It never validates the
-// token over the network: the window and the splash must appear first, and
-// Startup checks the token in the background.
+// NewApp loads config and prepares the downloader and the queue. It never
+// validates the token over the network: the window and the splash must
+// appear first, and Startup checks the token in the background.
 func NewApp() *App {
 	a := &App{outputDir: "./downloads", validateToken: config.Validate}
 	a.cfg = config.Config{
@@ -123,36 +105,106 @@ func NewApp() *App {
 	envPath, err := config.DefaultPath()
 	if err != nil {
 		a.ready = "config: " + err.Error()
+		a.ensureQueue()
 		return a
 	}
 	a.envPath = envPath
 	cfg, err := config.Load(envPath)
 	if err != nil {
 		a.ready = "config: " + err.Error()
+		a.ensureQueue()
 		return a
 	}
 	a.apply(cfg, false)
+	a.ensureQueue()
 	return a
 }
 
-// apply pushes a loaded configuration into the running app: output dir,
-// downloader client and the collection index. It is the single path used
-// both at startup and by SaveSettings (hot reload, no restart). Status
-// lines land in a.ready/a.readyNote for the caller to log.
-//
-// validate=false is the startup path: the client is created immediately and
-// the token is checked later in the background, so the window is never
-// blocked by a network call. validate=true keeps the settings-save behavior.
+// ensureQueue creates the queue once; all bindings call it so a partially
+// failed startup still yields an empty, working queue.
+func (a *App) ensureQueue() *queue.Manager {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.q == nil {
+		a.q = queue.New(a.queueSink(), a.resolveFunc(), a.downloadFunc(), a.duplicateFunc(), a.workers)
+	}
+	return a.q
+}
+
+func (a *App) queueSink() queue.Sink { return &appQueueSink{a: a} }
+
+// resolveFunc returns the test seam or the real link resolver.
+func (a *App) resolveFunc() queue.ResolveFunc {
+	if a.resolveHook != nil {
+		return a.resolveHook
+	}
+	return a.resolveLink
+}
+
+func (a *App) downloadFunc() queue.DownloadFunc {
+	if a.downloadHook != nil {
+		return a.downloadHook
+	}
+	return a.downloadTask
+}
+
+func (a *App) duplicateFunc() queue.DuplicateFunc {
+	if a.duplicateHook != nil {
+		return a.duplicateHook
+	}
+	return a.duplicateCandidate
+}
+
+// workers reports the configured pool size; read at every dispatch so a
+// settings change applies to the next free slot.
+func (a *App) workers() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg.Workers
+}
+
+// appQueueSink forwards queue state to the window as named events.
+type appQueueSink struct {
+	a *App
+}
+
+func (s *appQueueSink) TaskAdded(t queue.Task)     { s.a.emit("task-added", t) }
+func (s *appQueueSink) TaskRemoved(key string)     { s.a.emit("task-removed", key) }
+func (s *appQueueSink) Sources(src []queue.Source) { s.a.emit("sources", src) }
+func (s *appQueueSink) Queue(snap queue.Snapshot)  { s.a.emit("queue", snap) }
+func (s *appQueueSink) Log(text, kind string)      { s.a.log(text, kind) }
+
+func (s *appQueueSink) TaskUpdated(t queue.Task) {
+	s.a.emit("task-updated", t)
+	if !t.State.Terminal() {
+		return
+	}
+	switch t.Kind {
+	case "upgrade":
+		go s.a.afterUpgradeTask()
+	default:
+		go s.a.maybeExportM3U(t.SourceKey)
+	}
+}
+
+func (s *appQueueSink) Existing(trackID string) {
+	s.a.emit("existing", trackID)
+}
+
+// apply pushes a loaded configuration into the running app. The queue is
+// intentionally kept: its workers closure sees the new limit and new tasks
+// capture the new client and output dir, while running downloads finish
+// with the parameters they started with.
 func (a *App) apply(cfg config.Config, validate bool) {
 	a.cancelQualityCheck()
-	a.cfg = cfg
-	a.addLogSecret(cfg.Token)
-	a.ready = ""
-	a.readyNote = ""
 	a.mu.Lock()
+	a.cfg = cfg
 	a.tokenGen++
 	a.authErr = ""
 	a.mu.Unlock()
+	a.addLogSecret(cfg.Token)
+	a.ready = ""
+	a.readyNote = ""
 	a.outputDir = "./downloads"
 	if cfg.OutputDir != "" {
 		a.outputDir = cfg.OutputDir
@@ -173,28 +225,34 @@ func (a *App) apply(cfg config.Config, validate bool) {
 	a.setupLibrary(a.envPath, cfg.LibraryDir)
 	a.refreshPendingQuality()
 	if cfg.Token == "" {
+		a.mu.Lock()
 		a.client = nil
+		a.mu.Unlock()
 		a.ready = "токен пуст — доступно только 30-секундное превью; открой «⚙ Настройки → Как получить токен?»"
 		return
 	}
 	if validate {
 		who, err := config.Validate(cfg.Token)
 		if err != nil {
-			a.client = nil
-			a.ready = "токен НЕ принят: " + err.Error()
 			a.mu.Lock()
-			a.authErr = a.ready
+			a.client = nil
+			a.authErr = "токен НЕ принят: " + err.Error()
 			a.mu.Unlock()
+			a.ready = a.authErr
 			return
 		}
 		c := a.newClient(cfg)
+		a.mu.Lock()
 		a.client = c
+		a.mu.Unlock()
 		a.attachIndex(c)
 		a.ready = "токен ок: " + who
 		return
 	}
 	c := a.newClient(cfg)
+	a.mu.Lock()
 	a.client = c
+	a.mu.Unlock()
 	a.attachIndex(c)
 	a.ready = "проверяю токен…"
 }
@@ -213,9 +271,7 @@ func (a *App) newClient(cfg config.Config) *downloader.Client {
 	return c
 }
 
-// verifyStartupToken validates the token after the window is visible and
-// records the error for Download/PreviewLink. A result from an older
-// configuration is ignored, so saving settings mid-check cannot resurrect it.
+// verifyStartupToken validates the token after the window is visible.
 func (a *App) verifyStartupToken(token string, gen int) {
 	check := a.validateToken
 	if check == nil {
@@ -247,8 +303,14 @@ func (a *App) authError() string {
 	return a.authErr
 }
 
-// attachIndex makes every freshly published file part of the collection
-// immediately — no rescan needed for the next duplicate check.
+// clientSnapshot returns the current client under the lock.
+func (a *App) clientSnapshot() *downloader.Client {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.client
+}
+
+// attachIndex makes every freshly published file part of the collection.
 func (a *App) attachIndex(c *downloader.Client) {
 	if a.index == nil {
 		return
@@ -258,8 +320,6 @@ func (a *App) attachIndex(c *downloader.Client) {
 
 // setupLibrary builds the collection index when LIBRARY_DIR is set and
 // points at a real folder, or when the FLAC monitor needs OUTPUT_DIR.
-// An invalid collection path disables duplicate checks with a Russian
-// note; the monitor can still work over the downloads folder.
 func (a *App) setupLibrary(envPath, libraryDir string) {
 	libraryDir = strings.TrimSpace(libraryDir)
 	a.duplicatesEnabled = libraryDir != ""
@@ -285,8 +345,7 @@ func (a *App) setupLibrary(envPath, libraryDir string) {
 	a.index = library.New(cachePath, roots...)
 }
 
-// addLogSecret tells the file logger to hide token in every message.
-// Called from apply, so a hot-reloaded token is covered too.
+// addLogSecret tells the file logger to hide the token in every message.
 func (a *App) addLogSecret(token string) {
 	if a.logFile == nil {
 		return
@@ -294,8 +353,7 @@ func (a *App) addLogSecret(token string) {
 	a.logFile.AddSecret(token)
 }
 
-// writeLogHeader writes the build and path block at the top of every
-// run. It bypasses a.log on purpose: the header belongs to the file only.
+// writeLogHeader writes the build and path block at the top of every run.
 func (a *App) writeLogHeader() {
 	if a.logFile == nil {
 		return
@@ -321,8 +379,7 @@ func (a *App) writeLogHeader() {
 	}
 }
 
-// logFileLine tells the user where the diagnostic file is, or why it is
-// off. The line goes to both sinks through the regular log path.
+// logFileLine tells the user where the diagnostic file is.
 func (a *App) logFileLine() {
 	switch {
 	case a.logFile != nil:
@@ -334,8 +391,7 @@ func (a *App) logFileLine() {
 	}
 }
 
-// buildSummary describes the running binary: module version, VCS
-// revision and Go version. Missing build info degrades to "unknown".
+// buildSummary describes the running binary.
 func buildSummary() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -390,7 +446,6 @@ func (a *App) Startup(ctx context.Context) {
 		go a.verifyStartupToken(token, gen)
 	}
 	if a.index != nil {
-		// Полное сканирование — в фоне: окно живое, ход в логе.
 		go func() {
 			a.index.Refresh(func(s string) { a.log(s, "info") })
 			a.refreshPendingQuality()
@@ -407,25 +462,20 @@ func (a *App) Startup(ctx context.Context) {
 	}()
 }
 
-// DomReady shows the window once the frontend is loaded. The window starts
-// hidden so the splash is not played while WebView2 is still invisible;
-// showing it here makes the first visible frame the splash.
+// DomReady shows the window once the frontend is loaded.
 func (a *App) DomReady(ctx context.Context) {
 	runtime.WindowShow(ctx)
 	runtime.EventsEmit(ctx, "window-shown")
 }
 
-// BootReady shows the window after the frontend has armed the splash. The
-// binding is called before the animation starts, so the window never spends
-// its first visible second on the splash timer running in the background.
+// BootReady shows the window after the frontend has armed the splash.
 func (a *App) BootReady() {
 	if a.ctx != nil {
 		runtime.WindowShow(a.ctx)
 	}
 }
 
-// Default window size for a first launch, i.e. when .env carries no
-// saved WINDOW_WIDTH/WINDOW_HEIGHT (see spec desktop-app).
+// Default window size for a first launch (see spec desktop-app).
 const (
 	DefaultWindowWidth  = 950
 	DefaultWindowHeight = 634
@@ -433,9 +483,7 @@ const (
 	MinWindowHeight     = 600
 )
 
-// InitialSize returns the size the window must open with: the last
-// saved one when both dimensions survived Load, the default otherwise.
-// Called before wails.Run, so it must not touch the Wails runtime.
+// InitialSize returns the size the window must open with.
 func (a *App) InitialSize() (int, int) {
 	if a.cfg.WindowWidth > 0 && a.cfg.WindowHeight > 0 {
 		return a.cfg.WindowWidth, a.cfg.WindowHeight
@@ -443,10 +491,7 @@ func (a *App) InitialSize() (int, int) {
 	return DefaultWindowWidth, DefaultWindowHeight
 }
 
-// BeforeClose is the Wails OnBeforeClose hook. It remembers the current
-// window size and always lets the window close (returns false). A
-// maximised/fullscreen window is skipped: only the last normal size is
-// worth restoring.
+// BeforeClose remembers the last normal window size and always closes.
 func (a *App) BeforeClose(ctx context.Context) bool {
 	a.cancelQualityCheck()
 	if !runtime.WindowIsNormal(ctx) {
@@ -457,8 +502,7 @@ func (a *App) BeforeClose(ctx context.Context) bool {
 	return false
 }
 
-// saveWindowSize writes the new size into .env. Errors are swallowed —
-// there is no one left to report them to while the window closes.
+// saveWindowSize writes the new size into .env.
 func (a *App) saveWindowSize(w, h int) {
 	if a.envPath == "" {
 		return
@@ -470,10 +514,7 @@ func (a *App) saveWindowSize(w, h int) {
 	_ = config.Write(a.envPath, updates)
 }
 
-// windowSizeUpdate builds the config.Write payload for a new window
-// size, or nil when the size is invalid or unchanged — so a window that
-// never moved does not rewrite .env on every close. Pure: no runtime,
-// no filesystem.
+// windowSizeUpdate builds the config.Write payload for a new window size.
 func windowSizeUpdate(lastW, lastH, w, h int) map[string]string {
 	if w <= 0 || h <= 0 || (w == lastW && h == lastH) {
 		return nil
@@ -484,8 +525,7 @@ func windowSizeUpdate(lastW, lastH, w, h int) map[string]string {
 	}
 }
 
-// log sends one line to the diagnostic file and the window. Secrets are
-// redacted before both sinks: a screenshot of the window is safe too.
+// log sends one line to the diagnostic file and the window.
 func (a *App) log(text, kind string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -503,7 +543,6 @@ func (a *App) log(text, kind string) {
 }
 
 // emit sends one named frontend event; tests capture it via eventSink.
-// Safe for concurrent worker goroutines.
 func (a *App) emit(name string, args ...any) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -516,459 +555,260 @@ func (a *App) emit(name string, args ...any) {
 	}
 }
 
-// progress forwards a byte counter to the frontend, where the track's
-// row is updated in place. Safe for concurrent worker goroutines.
-func (a *App) progress(p downloader.Progress) {
-	a.emit("progress", p.TrackID, p.Label, p.Percent, p.Done, p.Total)
-}
-
-func formatEvent(e downloader.Event) (string, string) {
-	switch e.Kind {
-	case downloader.KindDownloading:
-		return "[downloading] " + e.Label, "info"
-	case downloader.KindDone:
-		s := "[done] " + e.Label + " (" + e.Format + ")"
-		if e.Fallback {
-			s += " [fallback MP3"
-			if e.FallbackReason != "" {
-				s += ": " + e.FallbackReason
-			}
-			s += "]"
-		}
-		if e.Converted {
-			s += " [ALAC→FLAC]"
-		}
-		return s, "done"
-	case downloader.KindSkipped:
-		switch e.Detail {
-		case downloader.SkipDuplicate:
-			return "[skip] " + e.Label + " (duplicate)", "info"
-		case downloader.SkipUnavailable:
-			return "[skip] " + e.Label + " (unavailable)", "info"
-		default:
-			return "[skip] " + e.Label + " (already exists)", "info"
-		}
-	case downloader.KindStopped:
-		return "[stopped] " + e.Label, "stopped"
-	default:
-		return "[error] " + e.Label + ": " + e.Detail, "err"
-	}
-}
-
-// checkDuplicate asks the user when the incoming track looks like a file
-// already in the collection. True = the download may proceed. Runs for
-// single tracks and per track of a playlist.
-func (a *App) checkDuplicate(t *downloader.Track) bool {
-	if !a.duplicatesEnabled || a.index == nil || t == nil {
-		return true
-	}
-	if a.index.Scanning() {
-		// Честно: проверяем только уже проиндексированную часть.
-		done, total := a.index.Progress()
-		a.log(fmt.Sprintf("[warn] индексация ещё идёт (%d/%d) — проверка дублей неполная", done, total), "info")
-	}
-	matches := a.index.FindMatches(t.Artists, t.FullTitle())
-	if len(matches) == 0 {
-		return true
-	}
-	return a.askDuplicate(duplicatePromptFor(t, matches[0]))
-}
-
-// duplicatePrompt is the data behind the duplicate warning: a probable
-// duplicate, never a verdict — the percentage and both files are shown so
-// the user decides. FileName is split from FilePath so the window can make
-// the found file obvious while still showing the full path.
-type duplicatePrompt struct {
-	Percent         int    `json:"percent"`
-	Track           string `json:"track"`
-	FileName        string `json:"fileName"`
-	FilePath        string `json:"filePath"`
-	FileExt         string `json:"fileExt"`
-	DifferentFormat bool   `json:"differentFormat"`
-}
-
-func duplicatePromptFor(t *downloader.Track, m library.Match) duplicatePrompt {
-	p := duplicatePrompt{
-		Percent:  m.Percent,
-		Track:    t.Label(),
-		FileName: filepath.Base(m.Path),
-		FilePath: m.Path,
-		FileExt:  strings.TrimPrefix(strings.ToLower(m.Ext), "."),
-	}
-	p.DifferentFormat = p.FileExt != "" && p.FileExt != "flac" && p.FileExt != "m4a"
-	return p
-}
-
-// askDuplicate asks the question in the app window and waits for the
-// answer. Tests substitute confirmDuplicate; a window that never started
-// (ctx == nil) lets the download proceed, as the old fallback did.
-func (a *App) askDuplicate(p duplicatePrompt) bool {
-	if a.confirmDuplicate != nil {
-		return a.confirmDuplicate(p)
-	}
-	if a.ctx == nil {
-		return true
-	}
-	return a.askFrontend(p)
-}
-
-// askFrontend emits the prompt and blocks until the user answers or the
-// window goes away. Only one prompt may be open: a second one proceeds
-// without asking rather than deadlocking the caller.
-func (a *App) askFrontend(p duplicatePrompt) bool {
-	reply := make(chan bool, 1)
-	a.dupMu.Lock()
-	if a.dupReply != nil {
-		a.dupMu.Unlock()
-		return true
-	}
-	a.dupReply = reply
-	a.dupMu.Unlock()
-	defer func() {
-		a.dupMu.Lock()
-		if a.dupReply == reply {
-			a.dupReply = nil
-		}
-		a.dupMu.Unlock()
-	}()
-
-	a.emit("duplicate-prompt", p)
-	select {
-	case ok := <-reply:
-		return ok
-	case <-a.ctx.Done():
-		return true
-	}
-}
-
-// AnswerDuplicate is called by the duplicate window: true lets the track
-// download, false skips it. Safe to call when no prompt is open.
-func (a *App) AnswerDuplicate(accept bool) {
-	a.dupMu.Lock()
-	reply := a.dupReply
-	a.dupReply = nil
-	a.dupMu.Unlock()
-	if reply != nil {
-		select {
-		case reply <- accept:
-		default:
-		}
-	}
-}
-
-// filterDuplicates applies the per-track confirmation to a playlist.
-// Declined tracks are logged and dropped; the rest (including the
-// unavailable ones, which need no question) go through as before.
-func (a *App) filterDuplicates(tracks []*downloader.Track) []*downloader.Track {
-	if !a.duplicatesEnabled || a.index == nil {
-		return tracks
-	}
-	var out []*downloader.Track
-	for _, t := range tracks {
-		if t == nil {
-			continue
-		}
-		if !t.Available || a.checkDuplicate(t) {
-			out = append(out, t)
-			continue
-		}
-		a.log("[skip] "+t.Label()+" (дубль, отменено пользователем)", "info")
-	}
-	return out
-}
-
-func splitLinks(input string) []string {
-	// split by whitespace and comma/semicolon
-	var out []string
-	var cur strings.Builder
-	for _, r := range input {
-		switch r {
-		case '\n', '\r', '\t', ' ', ',', ';':
-			s := strings.TrimSpace(cur.String())
-			cur.Reset()
-			if s != "" {
-				out = append(out, s)
-			}
-			continue
-		default:
-			cur.WriteRune(r)
-		}
-	}
-	if s := strings.TrimSpace(cur.String()); s != "" {
-		out = append(out, s)
-	}
-	return out
-}
-
-// Download fetches track/album/playlist links. It blocks; the frontend
-// awaits it while live log and progress events arrive. Supports multiple
-// links separated by whitespace/comma/semicolon.
-func (a *App) Download(link string) string {
+// Submit puts pasted links into the queue and returns immediately. An
+// empty return means accepted; otherwise the string is a [error] line.
+func (a *App) Submit(link string) string {
 	if msg := a.authError(); msg != "" {
 		return "[error] " + msg
 	}
-	if a.client == nil {
+	if a.clientSnapshot() == nil {
 		return "[error] нет токена: доступно только 30-секундное превью. Открой «⚙ Настройки → Как получить токен?»"
 	}
 	links := splitLinks(link)
 	if len(links) == 0 {
 		return "[error] пустая ссылка"
 	}
-	if len(links) == 1 {
-		return a.downloadOneLink(links[0])
-	}
-	var first string
-	for i, l := range links {
-		if i == 0 {
-			first = a.downloadOneLink(l)
-			continue
-		}
-		res := a.downloadOneLink(l)
-		if res != "" && first == "" {
-			first = res
-		}
-	}
-	return first
-}
-
-func (a *App) downloadOneLink(link string) string {
-	a.setBusy(true)
-	defer a.setBusy(false)
-	// Новая job'а: сбрасываем остановку предыдущей, чтобы «Остановить»
-	// не отравил следующее скачивание (stop.go).
-	a.client.StartJob()
-
-	ref, err := resolver.Parse(link)
-	if err != nil {
-		return "[error] " + err.Error()
-	}
-	if ref.Kind == resolver.KindPlaylist {
-		return a.downloadPlaylist(ref.PlaylistUUID)
-	}
-	if ref.Kind == resolver.KindAlbum {
-		return a.downloadAlbum(ref.AlbumID)
-	}
-	track, err := a.client.ResolveTrack(ref.TrackID)
-	if err != nil {
-		if a.stopRequested() {
-			return "[stopped] прервано пользователем"
-		}
-		return "[error] " + err.Error()
-	}
-	if !a.checkDuplicate(track) {
-		a.log("[skip] "+track.Label()+" (дубль, отменено пользователем)", "info")
-		return ""
-	}
-	return a.downloadSingle(track)
-}
-
-func (a *App) downloadAlbum(id string) string {
-	alb, err := a.client.Album(id)
-	if err != nil {
-		if a.stopRequested() {
-			return "[stopped] прервано пользователем"
-		}
-		return fmt.Sprintf("[error] альбом недоступен: %v", err)
-	}
-	if len(alb.Tracks) == 0 {
-		return "[error] альбом пуст"
-	}
-	tracks := a.filterDuplicates(alb.Tracks)
-	if len(tracks) == 0 {
-		return "[skip] все треки отклонены как возможные дубли"
-	}
-	title := alb.Title
-	if title == "" {
-		title = "Альбом"
-	}
-	a.jobStart(title, len(tracks))
-	a.trackRows(tracks)
-	sum, paths := a.runBatchCollect(tracks)
-	a.exportM3U(title, paths)
-	stopped := sum.Stopped > 0 || a.stopRequested()
-	if stopped {
-		a.log(fmt.Sprintf("[stopped] прервано: %d ok, %d skip, %d error", sum.OK, sum.Skipped, sum.Failed), "stopped")
-	} else {
-		a.log(fmt.Sprintf("[finished] %d ok, %d skip, %d error", sum.OK, sum.Skipped, sum.Failed), "info")
-	}
-	a.jobEnd(sum.OK, sum.Skipped, sum.Failed, stopped)
+	a.ensureQueue().Submit(links)
 	return ""
 }
 
-// downloadSingle runs one track as a job of 1: the same lifecycle as a
-// playlist (job-start → row status/progress → job-end), plus the full
-// log lines the window spec requires for single downloads.
-func (a *App) downloadSingle(track *downloader.Track) string {
-	a.jobStart("", 1) // no header line: the row itself shows the label
-	a.trackRows([]*downloader.Track{track})
-	var shown bool
-	sum := downloader.Summary{}
-	run := a.downloadOne
-	if run == nil {
-		run = func(t *downloader.Track, dir string, emit func(downloader.Event), onProgress downloader.ProgressFunc) error {
-			_, err := a.client.DownloadTrack(t, dir, emit, onProgress)
-			return err
-		}
+// GetQueue returns the current queue snapshot (first paint / redraw).
+func (a *App) GetQueue() queue.Snapshot {
+	return a.ensureQueue().Snapshot()
+}
+
+// CancelTask cancels one task (queued or active).
+func (a *App) CancelTask(key string) {
+	a.ensureQueue().CancelTask(key)
+}
+
+// RetryTask re-queues one failed or cancelled task.
+func (a *App) RetryTask(key string) {
+	a.ensureQueue().RetryTask(key)
+}
+
+// RemoveTask drops a finished row.
+func (a *App) RemoveTask(key string) {
+	a.ensureQueue().RemoveTask(key)
+}
+
+// CancelAll stops every active and waiting task.
+func (a *App) CancelAll() {
+	a.ensureQueue().CancelAll()
+}
+
+// ClearFinished removes finished rows from the list.
+func (a *App) ClearFinished() {
+	a.ensureQueue().ClearFinished()
+}
+
+// CancelSource cancels every task that came from one link.
+func (a *App) CancelSource(key string) {
+	a.ensureQueue().CancelSource(key)
+}
+
+// ResolveDuplicate answers a "possible duplicate" row.
+func (a *App) ResolveDuplicate(key string, accept bool) {
+	a.ensureQueue().ResolveDuplicate(key, accept)
+}
+
+// resolveLink expands one pasted link into tracks for the queue.
+func (a *App) resolveLink(ctx context.Context, link string) (queue.Resolved, error) {
+	c := a.clientSnapshot()
+	if c == nil {
+		return queue.Resolved{}, fmt.Errorf("нет токена: доступно только 30-секундное превью")
 	}
-	err := run(track, a.outputDir, func(e downloader.Event) {
-		text, kind := formatEvent(e)
-		a.log(text, kind)
-		status, skind := formatTrackStatus(e)
-		a.trackStatus(e.TrackID, status, skind)
-		countOutcome(&sum, e)
-		if e.Kind == downloader.KindDone || e.Kind == downloader.KindSkipped ||
-			e.Kind == downloader.KindFailed || e.Kind == downloader.KindStopped {
-			shown = true
-		}
-	}, func(p downloader.Progress) {
-		a.progress(p)
-	})
-	a.jobEnd(sum.OK, sum.Skipped, sum.Failed, sum.Stopped > 0 || a.stopRequested())
+	ref, err := resolver.Parse(strings.TrimSpace(link))
 	if err != nil {
-		if shown {
-			return ""
-		}
-		if errors.Is(err, downloader.ErrStopped) {
-			return "[stopped] прервано пользователем"
-		}
-		return fmt.Sprintf("[error] %v", err)
+		return queue.Resolved{}, err
 	}
-	if !shown {
-		return "[done]"
-	}
-	return ""
-}
-
-// countOutcome folds one terminal lifecycle event into the job summary.
-func countOutcome(sum *downloader.Summary, e downloader.Event) {
-	switch e.Kind {
-	case downloader.KindDone:
-		sum.OK++
-	case downloader.KindSkipped:
-		sum.Skipped++
-	case downloader.KindFailed:
-		sum.Failed++
-	case downloader.KindStopped:
-		sum.Stopped++
-	}
-}
-
-// formatTrackStatus renders the short in-row status for one track:
-// the same vocabulary as the log, minus the repeated label.
-// The frontend shows exactly one row per track and only this part changes.
-func formatTrackStatus(e downloader.Event) (string, string) {
-	switch e.Kind {
-	case downloader.KindDownloading:
-		return "[downloading]", "info"
-	case downloader.KindDone:
-		s := "[done] (" + e.Format + ")"
-		if e.Fallback {
-			s += " [fallback MP3]"
+	switch ref.Kind {
+	case resolver.KindPlaylist:
+		pl, err := c.PlaylistCtx(ctx, ref.PlaylistUUID)
+		if err != nil {
+			return queue.Resolved{}, err
 		}
-		if e.Converted {
-			s += " [ALAC→FLAC]"
+		return queue.Resolved{
+			Label:  "Плейлист · " + pl.Title,
+			Kind:   "playlist",
+			Title:  pl.Title,
+			Log:    fmt.Sprintf("[playlist] %s (%d треков)", pl.Title, len(pl.Tracks)),
+			Tracks: pl.Tracks,
+		}, nil
+	case resolver.KindAlbum:
+		alb, err := c.AlbumCtx(ctx, ref.AlbumID)
+		if err != nil {
+			return queue.Resolved{}, err
 		}
-		return s, "done"
-	case downloader.KindSkipped:
-		switch e.Detail {
-		case downloader.SkipDuplicate:
-			return "[skip] (duplicate)", "info"
-		case downloader.SkipUnavailable:
-			return "[skip] (unavailable)", "info"
-		default:
-			return "[skip] (already exists)", "info"
-		}
-	case downloader.KindStopped:
-		return "[stopped]", "stopped"
+		return queue.Resolved{
+			Label:  "Альбом · " + alb.Title,
+			Kind:   "album",
+			Title:  alb.Title,
+			Log:    fmt.Sprintf("[album] %s (%d треков)", alb.Title, len(alb.Tracks)),
+			Tracks: alb.Tracks,
+		}, nil
 	default:
-		return "[error] " + e.Detail, "err"
+		t, err := c.ResolveTrackCtx(ctx, ref.TrackID)
+		if err != nil {
+			return queue.Resolved{}, err
+		}
+		return queue.Resolved{Label: "Трек · " + t.Label(), Kind: "track", Tracks: []*downloader.Track{t}}, nil
 	}
 }
 
-// trackStatus forwards one track's status to its frontend row.
-// Safe for concurrent worker goroutines.
-func (a *App) trackStatus(id, status, kind string) {
-	a.emit("track-status", id, status, kind)
+// downloadTask downloads one queue task with the parameters current at the
+// moment the worker starts: a settings change applies to new tasks only.
+func (a *App) downloadTask(ctx context.Context, track *downloader.Track, item any, onProgress func(done, total int64)) (queue.Result, error) {
+	if it, ok := item.(quality.FoundItem); ok {
+		return a.upgradeItemTask(ctx, it, onProgress)
+	}
+	c := a.clientSnapshot()
+	if c == nil {
+		return queue.Result{}, fmt.Errorf("нет токена")
+	}
+	a.mu.Lock()
+	dir := a.outputDir
+	a.mu.Unlock()
+	var progress downloader.ProgressFunc
+	if onProgress != nil {
+		progress = func(p downloader.Progress) { onProgress(p.Done, p.Total) }
+	}
+	res, err := c.DownloadTrackCtx(ctx, track, dir, nil, progress)
+	return queue.Result{
+		Path:           res.Path,
+		Format:         res.Format,
+		Fallback:       res.Fallback,
+		FallbackReason: res.FallbackReason,
+		Converted:      res.Converted,
+	}, err
 }
 
-// trackRows sends the ordered row scaffolding: one [id, label] pair per
-// unique track, so the frontend shows exactly len rows in playlist order
-// before any worker reports back.
-func (a *App) trackRows(tracks []*downloader.Track) {
-	seen := make(map[string]bool)
-	var rows [][2]string
-	for _, t := range tracks {
-		if t == nil || seen[t.ID] {
+// upgradeItemTask runs one FLAC upgrade inside the shared queue pool.
+func (a *App) upgradeItemTask(ctx context.Context, it quality.FoundItem, onProgress func(done, total int64)) (queue.Result, error) {
+	a.cancelQualityCheck()
+	c := a.clientSnapshot()
+	if c == nil {
+		return queue.Result{}, fmt.Errorf("нет токена")
+	}
+	a.mu.Lock()
+	cfg := a.cfg
+	dir := a.outputDir
+	ix := a.index
+	journal := a.qualityJournal
+	a.mu.Unlock()
+	up := &quality.Upgrader{
+		Client: c, Upgrade: c.Upgrade, Index: ix, Journal: journal,
+		LibraryDir: cfg.LibraryDir, OutputDir: dir,
+		Log: func(s string) { a.log(s, "info") },
+	}
+	var progress downloader.ProgressFunc
+	if onProgress != nil {
+		progress = func(p downloader.Progress) { onProgress(p.Done, p.Total) }
+	}
+	res, err := up.UpgradeItem(ctx, it, nil, progress)
+	return queue.Result{Path: res.Path, Format: res.Format, Converted: res.Converted}, err
+}
+
+// duplicateCandidate looks for a probable duplicate in the collection.
+func (a *App) duplicateCandidate(t *downloader.Track) (queue.Candidate, bool) {
+	if !a.duplicatesEnabled || a.index == nil || t == nil {
+		return queue.Candidate{}, false
+	}
+	if a.index.Scanning() {
+		done, total := a.index.Progress()
+		a.log(fmt.Sprintf("[warn] индексация ещё идёт (%d/%d) — проверка дублей неполная", done, total), "info")
+	}
+	matches := a.index.FindMatches(t.Artists, t.FullTitle())
+	if len(matches) == 0 {
+		return queue.Candidate{}, false
+	}
+	m := matches[0]
+	p := queue.Candidate{
+		Percent:  m.Percent,
+		FileName: filepath.Base(m.Path),
+		FilePath: m.Path,
+		FileExt:  strings.TrimPrefix(strings.ToLower(m.Ext), "."),
+	}
+	p.DifferentFormat = p.FileExt != "" && p.FileExt != "flac" && p.FileExt != "m4a"
+	return p, true
+}
+
+// afterUpgradeTask refreshes the FLAC offer list once no upgrade task is
+// left running. It runs in its own goroutine from the queue sink.
+func (a *App) afterUpgradeTask() {
+	qm := a.ensureQueue()
+	for _, t := range qm.Snapshot().Tasks {
+		if t.Kind == "upgrade" && !t.State.Terminal() {
+			return
+		}
+	}
+	a.refreshPendingQuality()
+	remaining := a.PendingFound()
+	a.emit("quality-pending", remaining)
+	status := a.qualityStatusView()
+	a.emit("quality-check-finished", status.Text, len(remaining), "", len(remaining))
+}
+
+// maybeExportM3U writes the playlist/album .m3u once its source is fully
+// finished and EXPORT_M3U is on. It is idempotent per source.
+func (a *App) maybeExportM3U(sourceKey string) {
+	a.mu.Lock()
+	if a.exported != nil && a.exported[sourceKey] {
+		a.mu.Unlock()
+		return
+	}
+	cfg := a.cfg
+	a.mu.Unlock()
+	if !cfg.ExportM3U || sourceKey == "" {
+		return
+	}
+	snap := a.ensureQueue().Snapshot()
+	var src queue.Source
+	for _, s := range snap.Sources {
+		if s.Key == sourceKey {
+			src = s
+		}
+	}
+	if src.Kind != "album" && src.Kind != "playlist" {
+		return
+	}
+	var paths []string
+	for _, t := range snap.Tasks {
+		if t.SourceKey != sourceKey {
 			continue
 		}
-		seen[t.ID] = true
-		rows = append(rows, [2]string{t.ID, t.Label()})
+		if !t.State.Terminal() {
+			return
+		}
+		if t.Path != "" {
+			paths = append(paths, t.Path)
+		}
 	}
-	if len(rows) == 0 {
+	if len(paths) == 0 {
 		return
 	}
-	a.emit("tracks", rows)
-}
-
-// fetchPlaylistUUID resolves a playlist via the injectable hook (tests)
-// or the real client.
-func (a *App) fetchPlaylistUUID(uuid string) (*downloader.Playlist, error) {
-	if a.fetchPlaylist != nil {
-		return a.fetchPlaylist(uuid)
+	a.mu.Lock()
+	if a.exported == nil {
+		a.exported = make(map[string]bool)
 	}
-	return a.client.Playlist(uuid)
+	a.exported[sourceKey] = true
+	a.mu.Unlock()
+	a.exportM3U(src.Title, paths)
 }
 
-// jobCallbacks is the shared event/progress wiring for every batch job:
-// one row status per track, a fallback reason line when lossless was
-// unavailable, and byte counters forwarded to the frontend. Single-track
-// downloads use their own callback (formatEvent writes the full line).
-func (a *App) jobCallbacks() (func(downloader.Event), downloader.ProgressFunc) {
-	emit := func(e downloader.Event) {
-		status, kind := formatTrackStatus(e)
-		a.trackStatus(e.TrackID, status, kind)
-		if e.Kind == downloader.KindDone && e.Fallback && e.FallbackReason != "" {
-			a.log("[fallback] "+e.Label+": "+e.FallbackReason, "info")
-		}
-	}
-	return emit, func(p downloader.Progress) { a.progress(p) }
-}
-
-// runBatch downloads the playlist tracks through the injectable hook or
-// the real worker pool, wiring the shared job callbacks.
-func (a *App) runBatch(tracks []*downloader.Track) downloader.Summary {
-	sum, _ := a.runBatchCollect(tracks)
-	return sum
-}
-
-// runBatchCollect is runBatch plus the paths of successfully published
-// files, used by the .m3u export.
-func (a *App) runBatchCollect(tracks []*downloader.Track) (downloader.Summary, []string) {
-	emit, onProgress := a.jobCallbacks()
-	var paths []string
-	collect := func(e downloader.Event) {
-		if e.Kind == downloader.KindDone && e.Path != "" {
-			paths = append(paths, e.Path)
-		}
-		emit(e)
-	}
-	var sum downloader.Summary
-	if a.downloadBatch != nil {
-		sum = a.downloadBatch(tracks, a.outputDir, collect, onProgress)
-	} else {
-		sum = a.client.DownloadPlaylist(tracks, a.outputDir, collect, onProgress)
-	}
-	return sum, paths
-}
-
-// exportM3U writes a playlist file next to the downloaded tracks when
-// EXPORT_M3U is enabled. Failures are silent: audio files are already
-// valid and the export is a convenience.
+// exportM3U writes a playlist file next to the downloaded tracks. Failures
+// are silent: audio files are already valid and the export is a convenience.
 func (a *App) exportM3U(title string, paths []string) {
-	if !a.cfg.ExportM3U || len(paths) == 0 {
+	if len(paths) == 0 {
 		return
 	}
+	a.mu.Lock()
+	cfg := a.cfg
 	dir := a.outputDir
+	a.mu.Unlock()
+	if !cfg.ExportM3U {
+		return
+	}
 	if dir == "" {
 		dir = filepath.Dir(paths[0])
 	}
@@ -998,80 +838,29 @@ func m3uSafeName(title string) string {
 	return strings.Trim(strings.TrimSpace(repl.Replace(title)), ". ")
 }
 
-// downloadPlaylist resolves a playlist UUID into tracks, asks about the
-// probable duplicates per track and downloads the rest with the fixed
-// worker pool. One track never stops the rest.
-// The frontend shows exactly one row per track (status updates in place);
-// the log only gets the header and the [finished] summary line.
-func (a *App) downloadPlaylist(uuid string) string {
-	pl, err := a.fetchPlaylistUUID(uuid)
-	if err != nil {
-		if a.stopRequested() {
-			return "[stopped] прервано пользователем"
+func splitLinks(input string) []string {
+	var out []string
+	var cur strings.Builder
+	for _, r := range input {
+		switch r {
+		case '\n', '\r', '\t', ' ', ',', ';':
+			s := strings.TrimSpace(cur.String())
+			cur.Reset()
+			if s != "" {
+				out = append(out, s)
+			}
+			continue
+		default:
+			cur.WriteRune(r)
 		}
-		return fmt.Sprintf("[error] плейлист недоступен: %v", err)
 	}
-	if len(pl.Tracks) == 0 {
-		return "[error] плейлист пуст"
+	if s := strings.TrimSpace(cur.String()); s != "" {
+		out = append(out, s)
 	}
-	tracks := a.filterDuplicates(pl.Tracks)
-	if len(tracks) == 0 {
-		return "[skip] все треки отклонены как возможные дубли"
-	}
-	title := pl.Title
-	if title == "" {
-		title = "Плейлист"
-	}
-	a.jobStart(title, len(tracks))
-	a.trackRows(tracks)
-	sum, paths := a.runBatchCollect(tracks)
-	a.exportM3U(title, paths)
-	stopped := sum.Stopped > 0 || a.stopRequested()
-	if stopped {
-		a.log(fmt.Sprintf("[stopped] прервано: %d ok, %d skip, %d error", sum.OK, sum.Skipped, sum.Failed), "stopped")
-	} else {
-		a.log(fmt.Sprintf("[finished] %d ok, %d skip, %d error", sum.OK, sum.Skipped, sum.Failed), "info")
-	}
-	a.jobEnd(sum.OK, sum.Skipped, sum.Failed, stopped)
-	return ""
+	return out
 }
 
-// jobStart announces a new job: the frontend clears the previous run,
-// shows the optional header ("" for a single track — its row carries the
-// label) and opens count rows for status updates.
-func (a *App) jobStart(title string, count int) {
-	a.emit("job-start", title, count)
-}
-
-// jobEnd freezes the statusbar on the outcome of the finished job.
-// stopped marks a user abort: the frontend must not pull the bar to
-// 100% — an unfinished job stays at its real percentage.
-func (a *App) jobEnd(ok, skipped, failed int, stopped bool) {
-	a.emit("job-end", ok, skipped, failed, stopped)
-}
-
-// Stop aborts the running download: in-flight requests are cancelled
-// and the playlist pool stops launching queued tracks. Frontend side:
-// the «Скачать» button becomes «■ Остановить» while busy.
-func (a *App) Stop() {
-	a.mu.Lock()
-	c := a.client
-	a.mu.Unlock()
-	if c != nil {
-		c.Stop()
-	}
-}
-
-// stopRequested reports whether the user pressed «Остановить» in the
-// current job.
-func (a *App) stopRequested() bool {
-	a.mu.Lock()
-	c := a.client
-	a.mu.Unlock()
-	return c != nil && c.Stopped()
-}
-
-// Preview is the compact link preview shown above the input field.
+// Preview is the compact link preview shown under the input field.
 type Preview struct {
 	Kind     string // "track", "album", "playlist"
 	Title    string
@@ -1085,28 +874,30 @@ func (a *App) PreviewLink(link string) (Preview, error) {
 	if msg := a.authError(); msg != "" {
 		return Preview{}, errors.New(msg)
 	}
-	if a.client == nil {
+	c := a.clientSnapshot()
+	if c == nil {
 		return Preview{}, fmt.Errorf("нет токена")
 	}
 	ref, err := resolver.Parse(strings.TrimSpace(link))
 	if err != nil {
 		return Preview{}, err
 	}
+	ctx := context.Background()
 	switch ref.Kind {
 	case resolver.KindPlaylist:
-		pl, err := a.fetchPlaylistUUID(ref.PlaylistUUID)
+		pl, err := c.PlaylistCtx(ctx, ref.PlaylistUUID)
 		if err != nil {
 			return Preview{}, err
 		}
 		return previewOfList("playlist", pl.Title, pl.Tracks), nil
 	case resolver.KindAlbum:
-		alb, err := a.client.Album(ref.AlbumID)
+		alb, err := c.AlbumCtx(ctx, ref.AlbumID)
 		if err != nil {
 			return Preview{}, err
 		}
 		return previewOfList("album", alb.Title, alb.Tracks), nil
 	default:
-		t, err := a.client.ResolveTrack(ref.TrackID)
+		t, err := c.ResolveTrackCtx(ctx, ref.TrackID)
 		if err != nil {
 			return Preview{}, err
 		}
@@ -1132,7 +923,9 @@ func previewOfList(kind, title string, tracks []*downloader.Track) Preview {
 
 // OpenOutputDir opens the downloads folder in the system file manager.
 func (a *App) OpenOutputDir() error {
+	a.mu.Lock()
 	dir := a.outputDir
+	a.mu.Unlock()
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
@@ -1150,8 +943,7 @@ func (a *App) OpenOutputDir() error {
 	return cmd.Start()
 }
 
-// PickFolder opens the native directory picker and returns the chosen
-// path ("" when cancelled). Used by the settings window.
+// PickFolder opens the native directory picker and returns the chosen path.
 func (a *App) PickFolder() (string, error) {
 	if a.ctx == nil {
 		return "", fmt.Errorf("окно ещё не готово")
@@ -1165,22 +957,7 @@ func (a *App) PickFolder() (string, error) {
 	return res, nil
 }
 
-// setBusy marks the download state; the settings window stays locked
-// while busy (spec: настройки закрыты на время скачивания).
-func (a *App) setBusy(v bool) {
-	a.mu.Lock()
-	a.busy = v
-	a.mu.Unlock()
-}
-
-func (a *App) isBusy() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.busy
-}
-
-// Settings is the settings-window form: everything the UI exposes,
-// mapped 1:1 to .env keys (see config.Load).
+// Settings is the settings-window form.
 type Settings struct {
 	Token          string
 	OutputDir      string
@@ -1193,8 +970,7 @@ type Settings struct {
 	Subdirs        bool
 	SubdirTemplate string
 	ExportM3U      bool
-	// FLAC monitor. QualityText/Checking/Pending are read-only fields
-	// filled by GetSettings for the status line.
+	// FLAC monitor read-only fields.
 	FlacMonitor     bool
 	QualityText     string
 	QualityChecking bool
@@ -1202,14 +978,12 @@ type Settings struct {
 	QualityRejected []quality.DeclinedItem
 }
 
-// GetSettings returns the currently applied configuration with defaults
-// filled in, so the form never shows empty required fields. Locked while
-// a download runs.
+// GetSettings returns the applied configuration with defaults filled in.
+// It stays available while downloads run (see capability app-settings).
 func (a *App) GetSettings() (Settings, error) {
-	if a.isBusy() {
-		return Settings{}, fmt.Errorf("идёт скачивание — настройки недоступны")
-	}
+	a.mu.Lock()
 	cfg := a.cfg
+	a.mu.Unlock()
 	out := cfg.OutputDir
 	if out == "" {
 		out = "./downloads"
@@ -1248,7 +1022,6 @@ func (a *App) GetSettings() (Settings, error) {
 }
 
 // CheckToken validates a token against account/status without saving it.
-// Returns "ok: login (uid)" or a Russian error message.
 func (a *App) CheckToken(token string) (string, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
@@ -1261,13 +1034,9 @@ func (a *App) CheckToken(token string) (string, error) {
 	return "ок: " + who, nil
 }
 
-// SaveSettings validates the form, writes it into .env (preserving
-// comments and unknown keys) and hot-applies it without a restart.
-// On any failure the in-memory state stays untouched.
+// SaveSettings validates the form, writes it into .env and hot-applies it
+// without a restart. Active downloads keep their captured parameters.
 func (a *App) SaveSettings(s Settings) error {
-	if a.isBusy() {
-		return fmt.Errorf("идёт скачивание — настройки недоступны")
-	}
 	if a.envPath == "" {
 		return fmt.Errorf("путь к .env неизвестен — настройки не сохранены")
 	}
@@ -1318,6 +1087,10 @@ func (a *App) SaveSettings(s Settings) error {
 		FlacMonitor:    s.FlacMonitor,
 	}
 	a.apply(cfg, true)
+	a.ensureQueue()
+	// Новый лимит воркеров должен быть виден и применён сразу: Touch
+	// пересчитывает сводку и запускает ожидающие задачи по новому лимиту.
+	a.ensureQueue().Touch()
 	if a.ready != "" {
 		a.log(a.ready, "info")
 	}
@@ -1325,7 +1098,6 @@ func (a *App) SaveSettings(s Settings) error {
 		a.log(a.readyNote, "info")
 	}
 	if a.index != nil {
-		// Новый LIBRARY_DIR: полное сканирование в фоне, как при старте.
 		go a.index.Refresh(func(s string) { a.log(s, "info") })
 	}
 	a.maybeAutoCheck()

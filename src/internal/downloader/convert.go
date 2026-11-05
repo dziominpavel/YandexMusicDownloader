@@ -49,6 +49,7 @@ func alacToFLAC(ffmpeg, src, dir string) (string, error) {
 	_ = dstFile.Close()
 	cmd := exec.Command(ffmpeg, "-y", "-v", "error", "-i", src,
 		"-map", "0:a:0", "-c:a", "flac", dst)
+	hideConsoleWindow(cmd)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		os.Remove(dst)
 		return "", fmt.Errorf("downloader: ffmpeg alac→flac: %v: %s",

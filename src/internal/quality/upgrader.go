@@ -104,7 +104,7 @@ func (u *Upgrader) Run(items []FoundItem, emit func(downloader.Event), onProgres
 				safeEmit(downloader.Event{Kind: downloader.KindStopped, Label: it.Label, TrackID: it.Key})
 				return
 			}
-			outcome := u.upgradeOne(it, safeEmit, safeProgress)
+			outcome, _ := u.upgradeOneCtx(u.jobContext(), it, safeEmit, safeProgress)
 			sumMu.Lock()
 			switch outcome {
 			case outcomeOK:
@@ -123,6 +123,70 @@ func (u *Upgrader) Run(items []FoundItem, emit func(downloader.Event), onProgres
 	return sum
 }
 
+// jobContext is the context a Run batch runs in (legacy path).
+func (u *Upgrader) jobContext() context.Context {
+	if u.Client == nil {
+		return context.Background()
+	}
+	if ctx := u.Client.JobContext(); ctx != nil {
+		return ctx
+	}
+	return context.Background()
+}
+
+// UpgradeItem runs one found item with a caller-owned task context. The
+// queue uses it instead of Run: the pool, the cancellation and the row
+// state belong to the queue, the upgrader only owns one item.
+func (u *Upgrader) UpgradeItem(ctx context.Context, it FoundItem, emit func(downloader.Event), onProgress downloader.ProgressFunc) (downloader.Result, error) {
+	if u.Client == nil || u.Upgrade == nil {
+		return downloader.Result{}, errors.New("обновление недоступно")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var detail string
+	wrap := func(e downloader.Event) {
+		if e.Kind == downloader.KindFailed && strings.TrimSpace(e.Detail) != "" {
+			detail = e.Detail
+		}
+		if emit != nil {
+			emit(e)
+		}
+	}
+	out, res := u.upgradeOneCtx(ctx, it, wrap, onProgress)
+	switch out {
+	case outcomeOK:
+		return res, nil
+	case outcomeSkip:
+		return res, downloader.ErrAlreadyExists
+	case outcomeStopped:
+		return res, downloader.ErrStopped
+	default:
+		if detail == "" {
+			detail = "обновление не удалось"
+		}
+		return res, errors.New(detail)
+	}
+}
+
+// stopped reports a cancelled task or a stopped legacy job.
+func (u *Upgrader) stopped(ctx context.Context) bool {
+	if ctx != nil && ctx.Err() != nil {
+		return true
+	}
+	return u.Client != nil && u.Client.Stopped()
+}
+
+// resolveTrack prefers the context-aware resolver when the client has one.
+func (u *Upgrader) resolveTrack(ctx context.Context, id string) (*downloader.Track, error) {
+	if r, ok := u.Client.(interface {
+		ResolveTrackCtx(context.Context, string) (*downloader.Track, error)
+	}); ok {
+		return r.ResolveTrackCtx(ctx, id)
+	}
+	return u.Client.ResolveTrack(id)
+}
+
 type outcome int
 
 const (
@@ -132,7 +196,7 @@ const (
 	outcomeError
 )
 
-func (u *Upgrader) upgradeOne(it FoundItem, emit func(downloader.Event), onProgress downloader.ProgressFunc) outcome {
+func (u *Upgrader) upgradeOneCtx(ctx context.Context, it FoundItem, emit func(downloader.Event), onProgress downloader.ProgressFunc) (outcome, downloader.Result) {
 	now := u.now()
 	if strings.TrimSpace(it.Label) == "" {
 		it.Label = it.FileName
@@ -152,33 +216,35 @@ func (u *Upgrader) upgradeOne(it FoundItem, emit func(downloader.Event), onProgr
 			Kind: downloader.KindSkipped, Label: it.Label, TrackID: it.Key,
 			Path: it.AlreadyFlac,
 		})
-		return outcomeSkip
+		return outcomeSkip, downloader.Result{Path: it.AlreadyFlac, Format: "FLAC"}
 	}
 
 	if strings.TrimSpace(it.TrackID) == "" {
 		emit(downloader.Event{Kind: downloader.KindFailed, Label: it.Label, TrackID: it.Key, Detail: "нет Yandex ID"})
-		return outcomeError
+		return outcomeError, downloader.Result{}
 	}
-	track, err := u.Client.ResolveTrack(it.TrackID)
+	track, err := u.resolveTrack(ctx, it.TrackID)
 	if err != nil {
-		if u.Client.Stopped() {
+		if u.stopped(ctx) {
 			emit(downloader.Event{Kind: downloader.KindStopped, Label: it.Label, TrackID: it.Key})
-			return outcomeStopped
+			return outcomeStopped, downloader.Result{}
 		}
 		emit(downloader.Event{Kind: downloader.KindFailed, Label: it.Label, TrackID: it.Key, Detail: err.Error()})
-		return outcomeError
+		return outcomeError, downloader.Result{}
 	}
 
 	emit(downloader.Event{Kind: downloader.KindDownloading, Label: track.Label(), TrackID: it.Key})
 	progress := func(p downloader.Progress) {
 		p.TrackID = it.Key
-		onProgress(p)
+		if onProgress != nil {
+			onProgress(p)
+		}
 	}
-	res, err := u.Upgrade(u.Client.JobContext(), track, it.Path, u.OutputDir, progress)
+	res, err := u.Upgrade(ctx, track, it.Path, u.OutputDir, progress)
 	if err != nil {
-		if errors.Is(err, downloader.ErrStopped) || u.Client.Stopped() {
+		if errors.Is(err, downloader.ErrStopped) || u.stopped(ctx) {
 			emit(downloader.Event{Kind: downloader.KindStopped, Label: track.Label(), TrackID: it.Key})
-			return outcomeStopped
+			return outcomeStopped, downloader.Result{}
 		}
 		if errors.Is(err, downloader.ErrAlreadyExists) {
 			// A race or a pre-existing FLAC; treat it as an archive-only
@@ -196,7 +262,7 @@ func (u *Upgrader) upgradeOne(it FoundItem, emit func(downloader.Event), onProgr
 					Kind: downloader.KindSkipped, Label: track.Label(), TrackID: it.Key,
 					Path: res.Path,
 				})
-				return outcomeSkip
+				return outcomeSkip, downloader.Result{Path: res.Path, Format: "FLAC"}
 			}
 		}
 		u.recordUpgradeError(it, now, err)
@@ -204,7 +270,7 @@ func (u *Upgrader) upgradeOne(it FoundItem, emit func(downloader.Event), onProgr
 			Kind: downloader.KindFailed, Label: track.Label(), TrackID: it.Key,
 			Detail: HumanError(err),
 		})
-		return outcomeError
+		return outcomeError, downloader.Result{}
 	}
 
 	if res.Fallback {
@@ -213,7 +279,7 @@ func (u *Upgrader) upgradeOne(it FoundItem, emit func(downloader.Event), onProgr
 			Kind: downloader.KindFailed, Label: track.Label(), TrackID: it.Key,
 			Detail: "lossless снова недоступен",
 		})
-		return outcomeError
+		return outcomeError, downloader.Result{}
 	}
 	if res.Path != it.Path {
 		if target, moveErr := u.moveToOld(it.Path); moveErr != nil {
@@ -229,7 +295,7 @@ func (u *Upgrader) upgradeOne(it FoundItem, emit func(downloader.Event), onProgr
 		Kind: downloader.KindDone, Label: track.Label(), TrackID: it.Key,
 		Format: res.Format, Converted: res.Converted, Path: res.Path,
 	})
-	return outcomeOK
+	return outcomeOK, downloader.Result{Path: res.Path, Format: res.Format, Converted: res.Converted}
 }
 
 func (u *Upgrader) markUpgraded(it FoundItem, res downloader.Result, now time.Time) {
