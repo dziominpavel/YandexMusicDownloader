@@ -18,6 +18,10 @@ const (
 	minArtistSim  = 0.90
 	maxMatches    = 5
 	artistWeight  = 0.3
+
+	// radioEditMatchPercent is the confidence shown for a Radio Edit
+	// duplicate: same title and artist, but a different version.
+	radioEditMatchPercent = 95
 )
 
 // CandidateScore is the confidence of one search result. Unlike
@@ -71,12 +75,15 @@ type Match struct {
 }
 
 // FindMatches returns up to maxMatches candidates for the given track,
-// best first. An empty result means "no probable duplicate".
+// best first. An empty result means "no probable duplicate". A trailing
+// Radio Edit counts as the same song when the artists match; other version
+// qualifiers are left to the ordinary title comparison.
 func (ix *Index) FindMatches(artists []string, title string) []Match {
 	titleKey := norm.Comparable(title)
 	if titleKey == "" {
 		return nil
 	}
+	baseKey := norm.RadioEditBase(title)
 	artistsKey := norm.ArtistsKey(artists)
 	tRunes := []rune(titleKey)
 
@@ -89,9 +96,6 @@ func (ix *Index) FindMatches(artists []string, title string) []Match {
 			continue
 		}
 		simT := similarityCapped(tRunes, []rune(e.TitleKey), minTitleLoose)
-		if simT < 0 {
-			continue // too different to ever qualify
-		}
 		simA := 0.0
 		if artistsKey != "" && e.ArtistsKey != "" {
 			simA = similarityCapped([]rune(artistsKey), []rune(e.ArtistsKey), minArtistSim)
@@ -99,16 +103,30 @@ func (ix *Index) FindMatches(artists []string, title string) []Match {
 				simA = 0
 			}
 		}
-		if simT < minTitleSim && !(simT >= minTitleLoose && simA >= minArtistSim) {
+		if simT >= 0 && (simT >= minTitleSim || (simT >= minTitleLoose && simA >= minArtistSim)) {
+			out = append(out, Match{
+				Path:    e.Path,
+				Artists: e.Artists,
+				Title:   e.Title,
+				Ext:     e.Ext,
+				Percent: percentOf(simT, simA),
+			})
 			continue
 		}
-		out = append(out, Match{
-			Path:    e.Path,
-			Artists: e.Artists,
-			Title:   e.Title,
-			Ext:     e.Ext,
-			Percent: percentOf(simT, simA),
-		})
+		// Radio Edit fallback: the same recording shortened for radio.
+		// Other version qualifiers are deliberately not stripped.
+		if baseKey == "" || simA < minArtistSim || e.TitleKey == titleKey {
+			continue
+		}
+		if norm.RadioEditBase(e.TitleKey) == baseKey {
+			out = append(out, Match{
+				Path:    e.Path,
+				Artists: e.Artists,
+				Title:   e.Title,
+				Ext:     e.Ext,
+				Percent: radioEditMatchPercent,
+			})
+		}
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Percent != out[j].Percent {

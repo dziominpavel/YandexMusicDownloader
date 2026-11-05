@@ -123,6 +123,64 @@ func Comparable(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
+// RadioEditBase returns the comparable title with a trailing "Radio Edit"
+// qualifier removed. It is used only by duplicate matching: a radio edit is
+// the same recording as the album version, while remix/live/remastered are
+// deliberately kept apart (they are different recordings).
+//
+// It handles "Title Radio Edit", "Title (Radio Edit)", "Title [Radio Edit]"
+// and "Title (2-4 Grooves Radio Edit)", but only when the qualifier is at the
+// end; any other trailing bracket stops the search. Radio Version/Mix/Remix
+// are not removed.
+func RadioEditBase(title string) string {
+	key := Comparable(title)
+	if key == "" {
+		return ""
+	}
+	for {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return ""
+		}
+		if last := key[len(key)-1]; last == ')' || last == ']' {
+			open := byte('(')
+			if last == ']' {
+				open = '['
+			}
+			if i := strings.LastIndexByte(key, open); i >= 0 && containsRadioEdit(key[i+1:len(key)-1]) {
+				key = key[:i]
+				continue
+			}
+		}
+		if key == "radio edit" {
+			return ""
+		}
+		if strings.HasSuffix(key, " radio edit") {
+			key = key[:len(key)-len(" radio edit")]
+			continue
+		}
+		break
+	}
+	key = strings.TrimRight(strings.TrimSpace(key), " -.,;:")
+	if key == "radio edit" {
+		return ""
+	}
+	return key
+}
+
+// containsRadioEdit reports whether normalized text has the two-word phrase
+// "radio edit" as whole words (so "radio edited" does not match).
+func containsRadioEdit(s string) bool {
+	fields := strings.Fields(s)
+	for i := 0; i+1 < len(fields); i++ {
+		if strings.Trim(fields[i], ".,;:!?") == "radio" &&
+			strings.Trim(fields[i+1], ".,;:!?") == "edit" {
+			return true
+		}
+	}
+	return false
+}
+
 // ArtistsKey normalizes an artist list into an order-independent key:
 // every name through Comparable (comma-joined names split into tokens,
 // so "B, A" from a file name equals ["A", "B"] from the API), tokens

@@ -248,6 +248,98 @@ func TestFindMatchesCoverSameTitleDifferentArtists(t *testing.T) {
 	}
 }
 
+func TestFindMatchesRadioEditSuffix(t *testing.T) {
+	ix := buildIndex(t, "Eminem - Not Afraid.flac")
+	m := ix.FindMatches([]string{"Eminem"}, "Not Afraid Radio Edit")
+	if len(m) != 1 || m[0].Percent != 95 {
+		t.Fatalf("want single 95%% radio-edit match, got %+v", m)
+	}
+}
+
+func TestFindMatchesRadioEditReverse(t *testing.T) {
+	ix := buildIndex(t, "Artist - Song Radio Edit.flac")
+	m := ix.FindMatches([]string{"Artist"}, "Song")
+	if len(m) != 1 || m[0].Percent != 95 {
+		t.Fatalf("radio edit in the index must match plain title, got %+v", m)
+	}
+}
+
+func TestFindMatchesRadioEditBracketsAndRemixer(t *testing.T) {
+	ix := buildIndex(t,
+		"Artist - Song (Radio Edit).flac",
+		"Artist - Song [Radio Edit].flac",
+		"Artist - Song (2-4 Grooves Radio Edit).flac",
+	)
+	m := ix.FindMatches([]string{"Artist"}, "Song")
+	if len(m) != 3 {
+		t.Fatalf("want 3 radio-edit matches, got %+v", m)
+	}
+	for _, x := range m {
+		if x.Percent != 95 {
+			t.Fatalf("radio-edit match must be 95%%, got %+v", m)
+		}
+	}
+}
+
+func TestFindMatchesRadioEditDifferentArtist(t *testing.T) {
+	ix := buildIndex(t, "Artist A - Song.flac")
+	if m := ix.FindMatches([]string{"Artist B"}, "Song (Radio Edit)"); len(m) != 0 {
+		t.Fatalf("radio edit by another artist must not match, got %+v", m)
+	}
+}
+
+func TestFindMatchesRadioEditLeavesOtherVersions(t *testing.T) {
+	for _, title := range []string{
+		"Song (Radio Version)",
+		"Song (Radio Mix)",
+		"Song (Radio Remix)",
+		"Song (Remix)",
+		"Song (Live)",
+		"Song (Remastered)",
+		"Song (Version)",
+		"Song (m4a) [ФАКТ 320]",
+	} {
+		ix := buildIndex(t, "Artist - "+title+".flac")
+		if m := ix.FindMatches([]string{"Artist"}, "Song"); len(m) != 0 {
+			t.Errorf("%q must not match plain Song, got %+v", title, m)
+		}
+	}
+}
+
+func TestFindMatchesRadioEditReviewPairsDoNotMatch(t *testing.T) {
+	// Аудит коллекции: эти пары пользователь признал разными записями.
+	cases := []struct{ artist, plain, versioned string }{
+		{"Avril Lavigne", "What The Hell", "What The Hell (Bimbo Jones Remix)"},
+		{"Roxette", "The Sweet Hello, The Sad Goodbye", "The Sweet Hello, The Sad Goodbye (Bassflow Remake)"},
+		{"SAINt JHN", "Roses", "Roses (Imanbek Remix)"},
+		{"Scorpions", "Wind Of Change", "Wind Of Change (Russian Version)"},
+		{"ЕSTRADARADA", "Вите надо выйти", "Вите надо выйти (Remastered)"},
+		{"Катя Чехова", "Крылья", "Крылья (DFM Mix)"},
+		{"Макс Корж", "Где я", "Где я (DJ Selebrium Remix)"},
+	}
+	for _, c := range cases {
+		ix := buildIndex(t, c.artist+" - "+c.versioned+".flac")
+		if m := ix.FindMatches([]string{c.artist}, c.plain); len(m) != 0 {
+			t.Errorf("%q must not match %q, got %+v", c.versioned, c.plain, m)
+		}
+	}
+}
+
+func TestFindMatchesRadioEditExactStays100(t *testing.T) {
+	ix := buildIndex(t, "Artist - Song Radio Edit.flac")
+	m := ix.FindMatches([]string{"Artist"}, "Song Radio Edit")
+	if len(m) != 1 || m[0].Percent != 100 {
+		t.Fatalf("exact radio-edit title must stay 100%%, got %+v", m)
+	}
+}
+
+func TestFindMatchesRadioEditNeedsArtists(t *testing.T) {
+	ix := buildIndex(t, "Artist - Song.flac")
+	if m := ix.FindMatches(nil, "Song Radio Edit"); len(m) != 0 {
+		t.Fatalf("radio-edit fallback must require artists, got %+v", m)
+	}
+}
+
 func TestFindMatchesArtistOrderAndLooseTitle(t *testing.T) {
 	ix := buildIndex(t, "Исполнитель B, Исполнитель A - Песня.flac")
 	// Порядок исполнителей не важен; заголовок ниже 90%, но >= 80% —

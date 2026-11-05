@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+**Исправлено**
+- Поиск дублей теперь замечает радиоверсию: «Not Afraid» и «Not Afraid Radio Edit» предупреждают о возможном дубле.
+
+### Исправлено
+- `add-version-duplicate-matching`: `norm.RadioEditBase` снимает только хвостовой Radio Edit (без скобок, в `(…)`/`[…]`, с именем ремиксера), `library.FindMatches` даёт fallback 95% при схожести исполнителей ≥0.90; remix/live/remastered/version и служебные пометки не трогаются. Тесты: `TestRadioEditBase`, `TestFindMatchesRadioEdit*`.
+
 ## [1.0.0] — 2026-11-04 (MAJOR)
 
 **Добавлено**

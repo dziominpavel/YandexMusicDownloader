@@ -76,6 +76,53 @@ func TestComparableDistinct(t *testing.T) {
 	}
 }
 
+func TestRadioEditBase(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Not Afraid Radio Edit", "not afraid"},
+		{"Redlight Radio Edit", "redlight"},
+		{"Song - Radio Edit", "song"},
+		{"Song (Radio Edit)", "song"},
+		{"Song [Radio Edit]", "song"},
+		{"Song (2-4 Grooves Radio Edit)", "song"},
+		{"Song (Radio Edit) (Radio Edit)", "song"},
+		{"SONG (RADIO EDIT)", "song"},
+		{"Radio Edit", ""},
+		{"(Radio Edit)", ""},
+		{"Radio Edit.", ""},
+	}
+	for _, c := range cases {
+		if got := RadioEditBase(c.in); got != c.want {
+			t.Errorf("RadioEditBase(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestRadioEditBaseLeavesOtherVersions(t *testing.T) {
+	unchanged := []string{
+		"I Want to Live",
+		"Song (Radio Version)",
+		"Song (Radio Mix)",
+		"Song (Radio Remix)",
+		"Song (Remix)",
+		"Song (Live)",
+		"Song (Remastered)",
+		"Song (Version)",
+		"Song (m4a) [ФАКТ 320]",
+		"The Unforgiven II",
+		"Song (Part 2)",
+		"Song (feat. X)",
+		"Song Radio Edit Version",
+		"Radio Edit Song",
+		"Song (Radio Edit) [ФАКТ 320]",
+	}
+	for _, in := range unchanged {
+		want := Comparable(in)
+		if got := RadioEditBase(in); got != want {
+			t.Errorf("RadioEditBase(%q) = %q, want unchanged %q", in, got, want)
+		}
+	}
+}
+
 func TestArtistsKeyOrderIndependent(t *testing.T) {
 	a := ArtistsKey([]string{"Исполнитель B", "Исполнитель A"})
 	b := ArtistsKey([]string{"Исполнитель A", "Исполнитель B"})
