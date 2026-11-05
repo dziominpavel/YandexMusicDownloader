@@ -1,7 +1,8 @@
 # YandexMusicDownloader — правила для AI-агента
 
 Единый IDE-нейтральный источник always-on правил. Читается любым агентом (Cursor, Devin Desktop, JetBrains AI, OpenCode и др.).
-Дополнительные правила: `.cursor/rules/*.mdc`. OpenSpec-скиллы: `.cursor/skills/`, `.devin/skills/`, `.opencode/skills/`; команды: `.cursor/commands/opsx-*.md`, `.devin/workflows/opsx-*.md`, `.opencode/commands/opsx-*.md`.
+Дополнительные правила: `.cursor/rules/*.mdc`. OpenSpec-скиллы: `.cursor/skills/`, `.devin/skills/`, `.opencode/skills/`, `.dsh/skills/`; команды: `.cursor/commands/opsx-*.md`, `.devin/workflows/opsx-*.md`, `.opencode/commands/opsx-*.md`.
+В DeepSeek Harness файловых слэш-команд нет: команда — это навык. `/opsx-*` там работают как навыки-алиасы, ведущие к `openspec-*` (см. `.dsh/README.md`).
 
 ## Контекст проекта
 
@@ -49,7 +50,7 @@
 
 ## OpenSpec (spec-driven development)
 
-Структура: `openspec/` (`specs/`, `changes/`, `changes/archive/`). Скиллы и команды для Cursor (`.cursor/skills/openspec-*`, `.cursor/commands/opsx-*.md`), Devin Desktop (`.devin/skills/openspec-*`, `.devin/workflows/opsx-*.md`) и OpenCode (`.opencode/skills/openspec-*`, `.opencode/commands/opsx-*.md`).
+Структура: `openspec/` (`specs/`, `changes/`, `changes/archive/`). Скиллы и команды для Cursor (`.cursor/skills/openspec-*`, `.cursor/commands/opsx-*.md`), Devin Desktop (`.devin/skills/openspec-*`, `.devin/workflows/opsx-*.md`), OpenCode (`.opencode/skills/openspec-*`, `.opencode/commands/opsx-*.md`) и DeepSeek Harness (`.dsh/skills/openspec-*` + алиасы `opsx-*`, см. `.dsh/README.md`).
 
 ### Workflow
 
